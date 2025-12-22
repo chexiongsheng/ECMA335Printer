@@ -5,7 +5,7 @@ namespace ECMA335Printer
     /// </summary>
     class Section
     {
-        public string Name { get; set; }
+        public string Name { get; set; } = string.Empty;
         public uint VirtualSize { get; set; }
         public uint VirtualAddress { get; set; }
         public uint SizeOfRawData { get; set; }
@@ -38,12 +38,12 @@ namespace ECMA335Printer
     {
         public ushort MajorVersion { get; set; }
         public ushort MinorVersion { get; set; }
-        public string Version { get; set; }
+        public string Version { get; set; } = string.Empty;
         public Dictionary<string, MetadataStream> Streams { get; set; } = new Dictionary<string, MetadataStream>();
         public int StringIndexSize { get; set; }
         public int GuidIndexSize { get; set; }
         public int BlobIndexSize { get; set; }
-        public int[] TableRowCounts { get; set; }
+        public int[] TableRowCounts { get; set; } = Array.Empty<int>();
     }
 
     /// <summary>
@@ -51,9 +51,9 @@ namespace ECMA335Printer
     /// </summary>
     class MetadataStream
     {
-        public string Name { get; set; }
+        public string Name { get; set; } = string.Empty;
         public uint Offset { get; set; }
         public uint Size { get; set; }
-        public byte[] Data { get; set; }
+        public byte[] Data { get; set; } = Array.Empty<byte>();
     }
 }

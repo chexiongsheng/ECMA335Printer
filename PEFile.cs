@@ -8,8 +8,8 @@ namespace ECMA335Printer
     class PEFile
     {
         private readonly string _filePath;
-        private byte[] _fileData;
-        private BinaryReader _reader;
+        private byte[]? _fileData;
+        private BinaryReader? _reader;
 
         // PE Headers
         private int _peHeaderOffset;
@@ -26,10 +26,10 @@ namespace ECMA335Printer
         private List<Section> _sections = new List<Section>();
         
         // CLI Header
-        private CLIHeader _cliHeader;
+        private CLIHeader? _cliHeader;
         
         // Metadata
-        private MetadataRoot _metadata;
+        private MetadataRoot? _metadata;
 
         public PEFile(string filePath)
         {
@@ -52,7 +52,7 @@ namespace ECMA335Printer
         private void ParseDOSHeader()
         {
             // DOS Header starts at offset 0
-            _reader.BaseStream.Seek(0, SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(0, SeekOrigin.Begin);
             
             // Check DOS signature "MZ"
             ushort dosSignature = _reader.ReadUInt16();
@@ -62,13 +62,13 @@ namespace ECMA335Printer
             }
 
             // PE header offset is at 0x3C
-            _reader.BaseStream.Seek(0x3C, SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(0x3C, SeekOrigin.Begin);
             _peHeaderOffset = _reader.ReadInt32();
         }
 
         private void ParsePEHeader()
         {
-            _reader.BaseStream.Seek(_peHeaderOffset, SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(_peHeaderOffset, SeekOrigin.Begin);
             
             // Check PE signature "PE\0\0"
             uint peSignature = _reader.ReadUInt32();
@@ -89,7 +89,7 @@ namespace ECMA335Printer
 
         private void ParseOptionalHeader()
         {
-            long optionalHeaderStart = _reader.BaseStream.Position;
+            long optionalHeaderStart = _reader!.BaseStream.Position;
             
             _magic = _reader.ReadUInt16();
             bool is64Bit = _magic == 0x20B;
@@ -116,7 +116,7 @@ namespace ECMA335Printer
             _fileAlignment = _reader.ReadInt32();
 
             // Skip to data directories
-            _reader.BaseStream.Seek(optionalHeaderStart + _optionalHeaderSize, SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(optionalHeaderStart + _optionalHeaderSize, SeekOrigin.Begin);
         }
 
         private void ParseSections()
@@ -124,7 +124,7 @@ namespace ECMA335Printer
             for (int i = 0; i < _numberOfSections; i++)
             {
                 var section = new Section();
-                section.Name = Encoding.ASCII.GetString(_reader.ReadBytes(8)).TrimEnd('\0');
+                section.Name = Encoding.ASCII.GetString(_reader!.ReadBytes(8)).TrimEnd('\0');
                 section.VirtualSize = _reader.ReadUInt32();
                 section.VirtualAddress = _reader.ReadUInt32();
                 section.SizeOfRawData = _reader.ReadUInt32();
@@ -149,7 +149,7 @@ namespace ECMA335Printer
             }
 
             // Go back to optional header to read data directories
-            _reader.BaseStream.Seek(_peHeaderOffset + 24 + (_magic == 0x20B ? 112 : 96), SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(_peHeaderOffset + 24 + (_magic == 0x20B ? 112 : 96), SeekOrigin.Begin);
             
             // Skip to data directory 14 (CLI Header)
             _reader.BaseStream.Seek(14 * 8, SeekOrigin.Current);
@@ -163,7 +163,7 @@ namespace ECMA335Printer
 
             // Convert RVA to file offset
             uint cliHeaderOffset = RVAToFileOffset(cliHeaderRVA);
-            _reader.BaseStream.Seek(cliHeaderOffset, SeekOrigin.Begin);
+            _reader!.BaseStream.Seek(cliHeaderOffset, SeekOrigin.Begin);
 
             _cliHeader = new CLIHeader();
             _cliHeader.Cb = _reader.ReadUInt32();
@@ -181,8 +181,8 @@ namespace ECMA335Printer
 
         private void ParseMetadata()
         {
-            uint metadataOffset = RVAToFileOffset(_cliHeader.MetadataRVA);
-            _reader.BaseStream.Seek(metadataOffset, SeekOrigin.Begin);
+            uint metadataOffset = RVAToFileOffset(_cliHeader!.MetadataRVA);
+            _reader!.BaseStream.Seek(metadataOffset, SeekOrigin.Begin);
 
             _metadata = new MetadataRoot();
             
@@ -241,43 +241,43 @@ namespace ECMA335Printer
         private void ParseMetadataStreams()
         {
             // Parse #Strings stream
-            if (_metadata.Streams.ContainsKey("#Strings"))
+            if (_metadata!.Streams.ContainsKey("#Strings"))
             {
                 var stream = _metadata.Streams["#Strings"];
-                _reader.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
+                _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 stream.Data = _reader.ReadBytes((int)stream.Size);
             }
 
             // Parse #US stream
-            if (_metadata.Streams.ContainsKey("#US"))
+            if (_metadata!.Streams.ContainsKey("#US"))
             {
                 var stream = _metadata.Streams["#US"];
-                _reader.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
+                _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 stream.Data = _reader.ReadBytes((int)stream.Size);
             }
 
             // Parse #Blob stream
-            if (_metadata.Streams.ContainsKey("#Blob"))
+            if (_metadata!.Streams.ContainsKey("#Blob"))
             {
                 var stream = _metadata.Streams["#Blob"];
-                _reader.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
+                _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 stream.Data = _reader.ReadBytes((int)stream.Size);
             }
 
             // Parse #GUID stream
-            if (_metadata.Streams.ContainsKey("#GUID"))
+            if (_metadata!.Streams.ContainsKey("#GUID"))
             {
                 var stream = _metadata.Streams["#GUID"];
-                _reader.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
+                _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 stream.Data = _reader.ReadBytes((int)stream.Size);
             }
 
             // Parse #~ or #- stream (metadata tables)
-            string tablesStreamName = _metadata.Streams.ContainsKey("#~") ? "#~" : "#-";
-            if (_metadata.Streams.ContainsKey(tablesStreamName))
+            string tablesStreamName = _metadata!.Streams.ContainsKey("#~") ? "#~" : "#-";
+            if (_metadata!.Streams.ContainsKey(tablesStreamName))
             {
                 var stream = _metadata.Streams[tablesStreamName];
-                _reader.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
+                _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 
                 var parser = new MetadataTablesParser(_reader, _metadata);
                 parser.ParseTables();
@@ -298,7 +298,7 @@ namespace ECMA335Printer
 
         private string ReadString(uint offset)
         {
-            if (!_metadata.Streams.ContainsKey("#Strings"))
+            if (!_metadata!.Streams.ContainsKey("#Strings"))
                 return "";
 
             var data = _metadata.Streams["#Strings"].Data;
@@ -314,7 +314,7 @@ namespace ECMA335Printer
 
         public void PrintAssemblyInfo()
         {
-            var printer = new AssemblyInfoPrinter(_filePath, _fileData, _magic, _cliHeader, _metadata, _sections);
+            var printer = new AssemblyInfoPrinter(_filePath, _fileData!, _magic, _cliHeader!, _metadata!, _sections);
             printer.Print();
         }
     }
