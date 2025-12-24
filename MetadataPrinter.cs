@@ -191,5 +191,11 @@ namespace ECMA335Printer
             if (_metadata.Streams.ContainsKey("#US"))
                 Console.WriteLine($"#US heap: {_metadata.Streams["#US"].Size} bytes");
         }
+
+        public void PrintTextSectionAnalysis(List<Section> sections, byte[] fileData)
+        {
+            var analyzer = new TextSectionAnalyzer(_metadata, sections, fileData);
+            analyzer.PrintStatistics();
+        }
     }
 }

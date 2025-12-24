@@ -85,6 +85,9 @@ namespace ECMA335Printer
             printer.PrintTypeDefSummary(20);
             printer.PrintMethodDefSummary(20);
 
+            // Print .text section analysis
+            printer.PrintTextSectionAnalysis(peFile.Sections, peFile.FileData!);
+
             reader.Close();
             stream.Close();
         }
