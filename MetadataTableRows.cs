@@ -70,6 +70,10 @@ namespace ECMA335Printer
         public uint Name { get; set; }                  // Index into String heap
         public uint Signature { get; set; }             // Index into Blob heap (method signature)
         public uint ParamList { get; set; }             // Index into Param table (first parameter)
+        
+        // Resolved data
+        public string? NameString { get; set; }         // Resolved name from String heap
+        public MethodBody? MethodBody { get; set; }     // Parsed method body from RVA
     }
     #endregion
 
@@ -530,6 +534,34 @@ namespace ECMA335Printer
     class PropertyPtrRow
     {
         public uint Property { get; set; }              // Index into Property table
+    }
+    #endregion
+
+    #region Method Body Structures
+    /// <summary>
+    /// Method body structure containing IL code
+    /// </summary>
+    class MethodBody
+    {
+        public bool IsTiny { get; set; }                // True if tiny format, false if fat format
+        public ushort MaxStack { get; set; }            // Maximum stack size
+        public uint CodeSize { get; set; }              // Size of IL code in bytes
+        public uint LocalVarSigTok { get; set; }        // Token for local variable signature (StandAloneSig table)
+        public byte[] ILCode { get; set; } = Array.Empty<byte>();  // IL instructions
+        public ExceptionHandlingClause[] ExceptionClauses { get; set; } = Array.Empty<ExceptionHandlingClause>();
+    }
+
+    /// <summary>
+    /// Exception handling clause (try-catch-finally)
+    /// </summary>
+    class ExceptionHandlingClause
+    {
+        public uint Flags { get; set; }                 // Exception clause flags
+        public uint TryOffset { get; set; }             // Offset of try block
+        public uint TryLength { get; set; }             // Length of try block
+        public uint HandlerOffset { get; set; }         // Offset of handler block
+        public uint HandlerLength { get; set; }         // Length of handler block
+        public uint ClassTokenOrFilterOffset { get; set; }  // Exception type token or filter offset
     }
     #endregion
 }

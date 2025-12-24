@@ -31,6 +31,12 @@ namespace ECMA335Printer
         // Metadata
         private MetadataRoot? _metadata;
 
+        // Public properties for external access
+        public string FilePath => _filePath;
+        public byte[]? FileData => _fileData;
+        public List<Section> Sections => _sections;
+        public MetadataRoot? Metadata => _metadata;
+
         public PEFile(string filePath)
         {
             _filePath = filePath;
@@ -279,7 +285,7 @@ namespace ECMA335Printer
                 var stream = _metadata.Streams[tablesStreamName];
                 _reader!.BaseStream.Seek(stream.Offset, SeekOrigin.Begin);
                 
-                var parser = new MetadataTablesParser(_reader, _metadata);
+                var parser = new MetadataTablesParser(_reader, _metadata, _fileData!, _sections);
                 parser.ParseTables();
             }
         }
