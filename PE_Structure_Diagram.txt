@@ -250,3 +250,184 @@ Notes:
   • Table indices can be 2 or 4 bytes depending on row counts (HeapSizes flag)
   • The CLI Header (Entry 14) is what makes this a .NET assembly
   • Metadata tables use compressed tokens for space efficiency
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  Metadata and IL Relationship Diagram                   │
+│                   (How Metadata Links to IL Code)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Metadata Tables (#~ Stream)                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ MethodDef Table (0x06) - Method Definitions                       │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Row 1:                                                      │  │  │
+│  │  │   RVA = 0x00002050  ──────────────────────┐                 │  │  │
+│  │  │   ImplFlags = 0x0000                      │                 │  │  │
+│  │  │   Flags = 0x0086 (Public|HideBySig)       │                 │  │  │
+│  │  │   Name = 0x0123 → "#Strings[0x0123]"      │                 │  │  │
+│  │  │                   = "Main"                │                 │  │  │
+│  │  │   Signature = 0x0045 → "#Blob[0x0045]"    │                 │  │  │
+│  │  │   ParamList = 0x0001 → Param Table[1]     │                 │  │  │
+│  │  ├─────────────────────────────────────────────────────────────┤  │  │
+│  │  │ Row 2:                                                      │  │  │
+│  │  │   RVA = 0x00002080  ──────────────────────┼────┐            │  │  │
+│  │  │   ImplFlags = 0x0000                      │    │            │  │  │
+│  │  │   Flags = 0x0086                          │    │            │  │  │
+│  │  │   Name = 0x0130 → "GetValue"              │    │            │  │  │
+│  │  │   Signature = 0x0052                      │    │            │  │  │
+│  │  │   ParamList = 0x0001                      │    │            │  │  │
+│  │  ├─────────────────────────────────────────────────────────────┤  │  │
+│  │  │ Row 3:                                                      │  │  │
+│  │  │   RVA = 0x00000000  ← Abstract/Interface  │    │            │  │  │
+│  │  │   ImplFlags = 0x0400 (Abstract)           │    │            │  │  │
+│  │  │   Flags = 0x0406                          │    │            │  │  │
+│  │  │   Name = 0x0145 → "DoSomething"           │    │            │  │  │
+│  │  │   Signature = 0x0060                      │    │            │  │  │
+│  │  │   ParamList = 0x0002                      │    │            │  │  │
+│  │  └─────────────────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ FieldRVA Table (0x1D) - Field Initial Data                        │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
+│  │  │ Row 1:                                                      │  │  │
+│  │  │   RVA = 0x00002200  ──────────────────────┼────┼────┐       │  │  │
+│  │  │   Field = 0x0005 → Field Table[5]         │    │    │       │  │  │
+│  │  │   (Static field with initial data)        │    │    │       │  │  │
+│  │  └─────────────────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+                    │                          │         │
+                    │ RVA points to            │         │
+                    ↓                          ↓         ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  .text Section (IL Code & Data)                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ File Offset: 0x00000400 (example)                                 │  │
+│  │ Virtual Address: 0x00002000                                       │  │
+│  │                                                                   │  │
+│  │ ┌─────────────────────────────────────────────────────────────┐   │  │
+│  │ │ RVA 0x00002050: Method Body for "Main"                      │   │  │
+│  │ │  ┌───────────────────────────────────────────────────────┐  │   │  │
+│  │ │  │ Method Header (Tiny or Fat format)                    │  │   │  │
+│  │ │  │   Flags: 0x13 (Fat format, InitLocals)                │  │   │  │
+│  │ │  │   MaxStack: 8                                         │  │   │  │
+│  │ │  │   CodeSize: 13 bytes                                  │  │   │  │
+│  │ │  │   LocalVarSigTok: 0x11000001 → StandAloneSig Table[1] │  │   │  │
+│  │ │  ├───────────────────────────────────────────────────────┤  │   │  │
+│  │ │  │ IL Instructions:                                      │  │   │  │
+│  │ │  │   0x00: 72 01 00 00 70    ldstr "Hello World"         │  │   │  │
+│  │ │  │                          (token 0x70000001 → #US)     │  │   │  │
+│  │ │  │   0x05: 28 04 00 00 0A    call WriteLine              │  │   │  │
+│  │ │  │                          (token 0x0A000004 → MemberRef│  │   │  │
+│  │ │  │   0x0A: 00                nop                         │  │   │  │
+│  │ │  │   0x0B: 2A                ret                         │  │   │  │
+│  │ │  ├───────────────────────────────────────────────────────┤  │   │  │
+│  │ │  │ Exception Handling Clauses (if any)                   │  │   │  │
+│  │ │  │   Flags, TryOffset, TryLength, HandlerOffset, etc.    │  │   │  │
+│  │ │  └───────────────────────────────────────────────────────┘  │   │  │
+│  │ └─────────────────────────────────────────────────────────────┘   │  │
+│  │                                                                   │  │
+│  │ ┌─────────────────────────────────────────────────────────────┐   │  │
+│  │ │ RVA 0x00002080: Method Body for "GetValue"                  │   │  │
+│  │ │  ┌───────────────────────────────────────────────────────┐  │   │  │
+│  │ │  │ Method Header (Tiny format)                           │  │   │  │
+│  │ │  │   Flags: 0x06 (Tiny format)                           │  │   │  │
+│  │ │  │   CodeSize: 2 bytes (encoded in flags)                │  │   │  │
+│  │ │  ├───────────────────────────────────────────────────────┤  │   │  │
+│  │ │  │ IL Instructions:                                      │  │   │  │
+│  │ │  │   0x00: 1F 05             ldc.i4.s 5                  │  │   │  │
+│  │ │  │   0x02: 2A                ret                         │  │   │  │
+│  │ │  └───────────────────────────────────────────────────────┘  │   │  │
+│  │ └─────────────────────────────────────────────────────────────┘   │  │
+│  │                                                                   │  │
+│  │ ┌─────────────────────────────────────────────────────────────┐   │  │
+│  │ │ RVA 0x00002200: Static Field Initial Data                   │   │  │
+│  │ │  ┌───────────────────────────────────────────────────────┐  │   │  │
+│  │ │  │ Raw bytes for field initialization                    │  │   │  │
+│  │ │  │   01 02 03 04 05 06 07 08 ...                         │  │   │  │
+│  │ │  │   (e.g., array initializer data)                      │  │   │  │
+│  │ │  └───────────────────────────────────────────────────────┘  │   │  │
+│  │ └─────────────────────────────────────────────────────────────┘   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      RVA to File Offset Conversion                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  Given: RVA = 0x00002050 (from MethodDef.RVA)
+  
+  Step 1: Find the section containing this RVA
+  ┌─────────────────────────────────────────────────────────────┐
+  │ Section: .text                                              │
+  │   VirtualAddress = 0x00002000                               │
+  │   VirtualSize = 0x00001000                                  │
+  │   PointerToRawData = 0x00000400                             │
+  │   SizeOfRawData = 0x00001000                                │
+  │                                                             │
+  │ Check: 0x00002000 ≤ 0x00002050 < 0x00003000  ✓              │
+  └─────────────────────────────────────────────────────────────┘
+  
+  Step 2: Calculate file offset
+  ┌─────────────────────────────────────────────────────────────┐
+  │ FileOffset = PointerToRawData + (RVA - VirtualAddress)      │
+  │            = 0x00000400 + (0x00002050 - 0x00002000)         │
+  │            = 0x00000400 + 0x00000050                        │
+  │            = 0x00000450                                     │
+  └─────────────────────────────────────────────────────────────┘
+  
+  Step 3: Read method body from file offset 0x00000450
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Key Relationship Summary                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  1. MethodDef.RVA → Method Body (IL Code)
+     • RVA = 0 means abstract/interface method (no implementation)
+     • RVA ≠ 0 points to method body in .text section
+  
+  2. FieldRVA.RVA → Field Initial Data
+     • Used for static fields with initial values
+     • Points to raw data in .text or .data section
+  
+  3. Method Body Structure:
+     ┌──────────────────────────────────────────┐
+     │ Header (Tiny: 1 byte, Fat: 12 bytes)     │
+     ├──────────────────────────────────────────┤
+     │ IL Instructions (variable length)        │
+     ├──────────────────────────────────────────┤
+     │ Exception Clauses (optional, if Fat)     │
+     └──────────────────────────────────────────┘
+  
+  4. IL Instructions Reference Metadata via Tokens:
+     • ldstr → #US heap (User Strings)
+     • call/callvirt → MemberRef/MethodDef tables
+     • newobj → MemberRef/MethodDef tables
+     • ldfld/stfld → Field/MemberRef tables
+     • ldtoken → Any metadata table
+  
+  5. Token Format (4 bytes):
+     ┌────────────┬─────────────────────────────┐
+     │ Table ID   │ Row Index                   │
+     │ (1 byte)   │ (3 bytes)                   │
+     └────────────┴─────────────────────────────┘
+     
+     Examples:
+     • 0x06000001 → MethodDef Table, Row 1
+     • 0x0A000004 → MemberRef Table, Row 4
+     • 0x02000003 → TypeDef Table, Row 3
+     • 0x70000001 → #US heap, offset 1
+  
+  6. Complete Lookup Flow:
+     User Code → Compiler → PE File
+                              ↓
+     ┌────────────────────────────────────────┐
+     │ 1. Find method in MethodDef table      │
+     │ 2. Read RVA field                      │
+     │ 3. Convert RVA to file offset          │
+     │ 4. Read method body header             │
+     │ 5. Parse IL instructions               │
+     │ 6. Resolve tokens to metadata          │
+     └────────────────────────────────────────┘
