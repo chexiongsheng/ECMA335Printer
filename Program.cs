@@ -88,6 +88,10 @@ namespace ECMA335Printer
             // Print .text section analysis
             printer.PrintTextSectionAnalysis(peFile.Sections, peFile.FileData!);
 
+            // Print signatures
+            printer.PrintFieldSignatures(10);
+            printer.PrintMethodSignatures(10);
+
             reader.Close();
             stream.Close();
         }

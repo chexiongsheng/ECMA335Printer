@@ -55,6 +55,10 @@ namespace ECMA335Printer
         public ushort Flags { get; set; }               // 2-byte bitmask of FieldAttributes
         public uint Name { get; set; }                  // Index into String heap
         public uint Signature { get; set; }             // Index into Blob heap (field signature)
+        
+        // Resolved data
+        public string? NameString { get; set; }         // Resolved name from String heap
+        public FieldSignature? ParsedSignature { get; set; }  // Parsed signature from Blob heap
     }
     #endregion
 
@@ -73,6 +77,7 @@ namespace ECMA335Printer
         
         // Resolved data
         public string? NameString { get; set; }         // Resolved name from String heap
+        public MethodSignature? ParsedSignature { get; set; }  // Parsed signature from Blob heap
         public MethodBody? MethodBody { get; set; }     // Parsed method body from RVA
     }
     #endregion

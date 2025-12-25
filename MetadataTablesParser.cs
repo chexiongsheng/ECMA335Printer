@@ -386,12 +386,34 @@ namespace ECMA335Printer
             var table = new FieldRow[count];
             for (int i = 0; i < count; i++)
             {
+                // Read in correct order: Flags, Name, Signature
+                ushort flags = _reader.ReadUInt16();
+                uint nameIndex = ReadStringIndex();
+                uint sigIndex = ReadBlobIndex();
+                
                 table[i] = new FieldRow
                 {
-                    Flags = _reader.ReadUInt16(),
-                    Name = ReadStringIndex(),
-                    Signature = ReadBlobIndex()
+                    Flags = flags,
+                    Name = nameIndex,
+                    Signature = sigIndex
                 };
+
+                // Resolve name and signature
+                table[i].NameString = ReadString(nameIndex);
+                
+                byte[] sigData = ReadBlob(sigIndex);
+                if (sigData.Length > 0)
+                {
+                    try
+                    {
+                        var parser = new SignatureParser(sigData);
+                        table[i].ParsedSignature = parser.ParseFieldSignature();
+                    }
+                    catch
+                    {
+                        // If parsing fails, leave ParsedSignature as null
+                    }
+                }
             }
             return table;
         }
@@ -412,18 +434,39 @@ namespace ECMA335Printer
             for (int i = 0; i < count; i++)
             {
                 uint rva = _reader.ReadUInt32();
+                ushort implFlags = _reader.ReadUInt16();
+                ushort flags = _reader.ReadUInt16();
+                uint nameIndex = ReadStringIndex();
+                uint sigIndex = ReadBlobIndex();
+                uint paramList = ReadTableIndex(0x08);
+                
                 table[i] = new MethodDefRow
                 {
                     RVA = rva,
-                    ImplFlags = _reader.ReadUInt16(),
-                    Flags = _reader.ReadUInt16(),
-                    Name = ReadStringIndex(),
-                    Signature = ReadBlobIndex(),
-                    ParamList = ReadTableIndex(0x08)
+                    ImplFlags = implFlags,
+                    Flags = flags,
+                    Name = nameIndex,
+                    Signature = sigIndex,
+                    ParamList = paramList
                 };
 
-                // Resolve name and method body
-                table[i].NameString = ReadString(table[i].Name);
+                // Resolve name, signature, and method body
+                table[i].NameString = ReadString(nameIndex);
+                
+                byte[] sigData = ReadBlob(sigIndex);
+                if (sigData.Length > 0)
+                {
+                    try
+                    {
+                        var parser = new SignatureParser(sigData);
+                        table[i].ParsedSignature = parser.ParseMethodSignature();
+                    }
+                    catch
+                    {
+                        // If parsing fails, leave ParsedSignature as null
+                    }
+                }
+                
                 table[i].MethodBody = ParseMethodBody(rva);
             }
             return table;

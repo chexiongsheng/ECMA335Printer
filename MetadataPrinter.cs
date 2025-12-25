@@ -224,5 +224,85 @@ namespace ECMA335Printer
             var analyzer = new TextSectionAnalyzer(_metadata, sections, fileData);
             analyzer.PrintStatistics();
         }
+
+        /// <summary>
+        /// Print field signatures (first N fields)
+        /// </summary>
+        public void PrintFieldSignatures(int maxFields = 20)
+        {
+            if (_metadata.FieldTable.Length == 0)
+                return;
+
+            Console.WriteLine($"\n=== Field Signatures (showing first {Math.Min(maxFields, _metadata.FieldTable.Length)} fields) ===\n");
+
+            for (int i = 0; i < Math.Min(maxFields, _metadata.FieldTable.Length); i++)
+            {
+                var field = _metadata.FieldTable[i];
+                string name = field.NameString ?? _parser.ReadString(field.Name);
+                
+                Console.WriteLine($"Field #{i + 1}: {name}");
+                Console.WriteLine($"  Flags: 0x{field.Flags:X4}");
+                
+                if (field.ParsedSignature != null)
+                {
+                    Console.WriteLine($"  Signature: {field.ParsedSignature}");
+                    Console.WriteLine($"  Raw Blob: {BitConverter.ToString(field.ParsedSignature.RawData).Replace("-", " ")}");
+                }
+                else
+                {
+                    Console.WriteLine($"  Signature: <not parsed>");
+                }
+                Console.WriteLine();
+            }
+        }
+
+        /// <summary>
+        /// Print method signatures (first N methods)
+        /// </summary>
+        public void PrintMethodSignatures(int maxMethods = 20)
+        {
+            if (_metadata.MethodDefTable.Length == 0)
+                return;
+
+            Console.WriteLine($"\n=== Method Signatures (showing first {Math.Min(maxMethods, _metadata.MethodDefTable.Length)} methods) ===\n");
+
+            for (int i = 0; i < Math.Min(maxMethods, _metadata.MethodDefTable.Length); i++)
+            {
+                var method = _metadata.MethodDefTable[i];
+                string name = method.NameString ?? _parser.ReadString(method.Name);
+                
+                Console.WriteLine($"Method #{i + 1}: {name}");
+                Console.WriteLine($"  RVA: 0x{method.RVA:X8}");
+                Console.WriteLine($"  Flags: 0x{method.Flags:X4}");
+                
+                if (method.ParsedSignature != null)
+                {
+                    var sig = method.ParsedSignature;
+                    Console.WriteLine($"  Signature: {sig}");
+                    Console.WriteLine($"  Details:");
+                    Console.WriteLine($"    Calling Convention: {sig.CallingConvention} (0x{(byte)sig.CallingConvention:X2})");
+                    Console.WriteLine($"    Has This: {sig.HasThis}");
+                    Console.WriteLine($"    Is Generic: {sig.IsGeneric}");
+                    if (sig.IsGeneric)
+                        Console.WriteLine($"    Generic Param Count: {sig.GenericParamCount}");
+                    Console.WriteLine($"    Parameter Count: {sig.ParamCount}");
+                    Console.WriteLine($"    Return Type: {sig.ReturnType}");
+                    if (sig.Parameters.Length > 0)
+                    {
+                        Console.WriteLine($"    Parameters:");
+                        for (int p = 0; p < sig.Parameters.Length; p++)
+                        {
+                            Console.WriteLine($"      [{p}]: {sig.Parameters[p]}");
+                        }
+                    }
+                    Console.WriteLine($"  Raw Blob: {BitConverter.ToString(sig.RawData).Replace("-", " ")}");
+                }
+                else
+                {
+                    Console.WriteLine($"  Signature: <not parsed>");
+                }
+                Console.WriteLine();
+            }
+        }
     }
 }
