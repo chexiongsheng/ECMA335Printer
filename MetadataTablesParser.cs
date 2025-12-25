@@ -165,6 +165,50 @@ namespace ECMA335Printer
             return new Guid(guidBytes);
         }
 
+        public byte[] ReadBlob(uint offset)
+        {
+            if (!_metadata.Streams.ContainsKey("#Blob") || offset == 0)
+                return Array.Empty<byte>();
+
+            var data = _metadata.Streams["#Blob"].Data;
+            if (offset >= data.Length)
+                return Array.Empty<byte>();
+
+            // Read the compressed length
+            int pos = (int)offset;
+            int length;
+
+            if ((data[pos] & 0x80) == 0)
+            {
+                // 1-byte length
+                length = data[pos];
+                pos++;
+            }
+            else if ((data[pos] & 0xC0) == 0x80)
+            {
+                // 2-byte length
+                length = ((data[pos] & 0x3F) << 8) | data[pos + 1];
+                pos += 2;
+            }
+            else if ((data[pos] & 0xE0) == 0xC0)
+            {
+                // 4-byte length
+                length = ((data[pos] & 0x1F) << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
+                pos += 4;
+            }
+            else
+            {
+                return Array.Empty<byte>();
+            }
+
+            if (pos + length > data.Length)
+                return Array.Empty<byte>();
+
+            byte[] result = new byte[length];
+            Array.Copy(data, pos, result, 0, length);
+            return result;
+        }
+
         private uint RVAToFileOffset(uint rva)
         {
             foreach (var section in _sections)

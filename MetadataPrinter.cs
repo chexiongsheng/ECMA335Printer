@@ -59,8 +59,35 @@ namespace ECMA335Printer
             var assembly = _metadata.AssemblyTable[0];
             Console.WriteLine($"Name: {_parser.ReadString(assembly.Name)}");
             Console.WriteLine($"Version: {assembly.MajorVersion}.{assembly.MinorVersion}.{assembly.BuildNumber}.{assembly.RevisionNumber}");
-            Console.WriteLine($"Culture: {_parser.ReadString(assembly.Culture)}");
+            
+            string culture = _parser.ReadString(assembly.Culture);
+            Console.WriteLine($"Culture: {(string.IsNullOrEmpty(culture) ? "neutral" : culture)}");
             Console.WriteLine($"Flags: 0x{assembly.Flags:X8}");
+
+            // Read and display PublicKey
+            byte[] publicKey = _parser.ReadBlob(assembly.PublicKey);
+            if (publicKey.Length > 0)
+            {
+                Console.WriteLine($"\nPublicKey: ({publicKey.Length} bytes)");
+                Console.WriteLine($"  {BitConverter.ToString(publicKey).Replace("-", "")}");
+
+                // Calculate and display PublicKeyToken (last 8 bytes of SHA-1 hash, reversed)
+                using (var sha1 = System.Security.Cryptography.SHA1.Create())
+                {
+                    byte[] hash = sha1.ComputeHash(publicKey);
+                    byte[] token = new byte[8];
+                    for (int i = 0; i < 8; i++)
+                    {
+                        token[i] = hash[hash.Length - 1 - i]; // Reverse order
+                    }
+                    Console.WriteLine($"PublicKeyToken: {BitConverter.ToString(token).Replace("-", "").ToLower()}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"\nPublicKey: None (not strong-named)");
+                Console.WriteLine($"PublicKeyToken: null");
+            }
         }
 
         public void PrintTypeDefSummary(int maxTypes = 10)
