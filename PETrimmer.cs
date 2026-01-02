@@ -227,6 +227,10 @@ namespace ECMA335Printer
             long accountedBytes = trimmedBytes + remainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
+            // Phase 3: Trim unused strings in #Strings heap
+            Console.WriteLine($"\n=== Phase 3: String Trimming ===");
+            var (stringsOriginalSize, trimmedStringBytes, stringsRemainingBytes) = TrimUnusedStrings();
+
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Total types: {totalClassCount}");
             Console.WriteLine($"Trimmed types (entire): {trimmedClassCount}");
@@ -238,9 +242,14 @@ namespace ECMA335Printer
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
             Console.WriteLine($"Trimmed bytes (classes): {trimmedClassBytes:N0} ({(trimmedClassBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (methods): {trimmedMethodBytes:N0} ({(trimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Trimmed bytes (total): {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"\n#Strings Heap Statistics:");
+            Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
+            Console.WriteLine($"  Trimmed: {trimmedStringBytes:N0} bytes ({(trimmedStringBytes * 100.0 / stringsOriginalSize):F2}%)");
+            Console.WriteLine($"  Remaining: {stringsRemainingBytes:N0} bytes ({(stringsRemainingBytes * 100.0 / stringsOriginalSize):F2}%)");
             if (unaccountedBytes != 0)
             {
                 Console.WriteLine($"Unaccounted: {unaccountedBytes:N0} ({(unaccountedBytes * 100.0 / _fileData.Length):F2}%)");
@@ -309,9 +318,13 @@ namespace ECMA335Printer
 
             long trimmedBytes = _totalBytesZeroed;
 
+            // Trim unused strings in #Strings heap
+            Console.WriteLine($"\n=== String Trimming ===");
+            var (stringsOriginalSize, trimmedStringBytes, stringsRemainingBytes) = TrimUnusedStrings();
+
             // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
             long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = trimmedBytes + remainingBytes + baseOverhead;
+            long accountedBytes = _totalBytesZeroed + remainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
@@ -320,9 +333,15 @@ namespace ECMA335Printer
             Console.WriteLine($"Remaining types: {remainingClassCount}");
             Console.WriteLine($"\nByte Statistics:");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
-            Console.WriteLine($"Trimmed bytes: {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (types): {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"\n#Strings Heap Statistics:");
+            Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
+            Console.WriteLine($"  Trimmed: {trimmedStringBytes:N0} bytes ({(trimmedStringBytes * 100.0 / stringsOriginalSize):F2}%)");
+            Console.WriteLine($"  Remaining: {stringsRemainingBytes:N0} bytes ({(stringsRemainingBytes * 100.0 / stringsOriginalSize):F2}%)");
             if (unaccountedBytes != 0)
             {
                 Console.WriteLine($"Unaccounted: {unaccountedBytes:N0} ({(unaccountedBytes * 100.0 / _fileData.Length):F2}%)");
@@ -966,10 +985,8 @@ namespace ECMA335Printer
                 overhead += 100 + (_metadata.Streams.Count * 20);
             }
 
-            // 3. Shared Heaps (#Strings, #US, #GUID, #Blob)
-            // These contain shared data used by all types
-            if (_metadata.Streams.ContainsKey("#Strings"))
-                overhead += _metadata.Streams["#Strings"].Data.Length;
+            // 3. Shared Heaps (#US, #GUID, #Blob)
+            // Note: #Strings is handled separately in string trimming
             if (_metadata.Streams.ContainsKey("#US"))
                 overhead += _metadata.Streams["#US"].Data.Length;
             if (_metadata.Streams.ContainsKey("#GUID"))
@@ -1066,6 +1083,386 @@ namespace ECMA335Printer
                 end++;
 
             return Encoding.UTF8.GetString(data, (int)offset, end - (int)offset);
+        }
+
+        #endregion
+
+        #region String Trimming
+
+        /// <summary>
+        /// 剪裁#Strings堆中未使用的字符串
+        /// </summary>
+        /// <returns>Tuple of (originalSize, trimmedBytes, remainingBytes)</returns>
+        private (long originalSize, long trimmedBytes, long remainingBytes) TrimUnusedStrings()
+        {
+            if (!_metadata.Streams.ContainsKey("#Strings"))
+            {
+                Console.WriteLine("No #Strings heap found");
+                return (0, 0, 0);
+            }
+
+            var stringsStream = _metadata.Streams["#Strings"];
+            long originalSize = stringsStream.Data.Length;
+            long bytesZeroedBefore = _totalBytesZeroed;
+
+            // Step 1: Collect all used string offsets
+            Console.WriteLine("Collecting used string offsets...");
+            HashSet<uint> usedStringOffsets = CollectUsedStringOffsets();
+            Console.WriteLine($"Found {usedStringOffsets.Count} used string offsets");
+
+            // Step 2: Parse string heap to find all string ranges
+            Console.WriteLine("Parsing string heap...");
+            Dictionary<uint, uint> stringRanges = ParseStringHeap();
+            Console.WriteLine($"Found {stringRanges.Count} strings in heap");
+
+            // Step 3: Zero unused strings and calculate remaining bytes
+            Console.WriteLine("Zeroing unused strings...");
+            int trimmedStringCount = 0;
+            int remainingStringCount = 0;
+            long remainingBytes = 0;
+            
+            foreach (var (offset, length) in stringRanges)
+            {
+                if (!usedStringOffsets.Contains(offset))
+                {
+                    uint fileOffset = stringsStream.Offset + offset;
+                    ZeroBytes(fileOffset, length);
+                    trimmedStringCount++;
+                }
+                else
+                {
+                    remainingBytes += length;
+                    remainingStringCount++;
+                }
+            }
+
+            long trimmedBytes = _totalBytesZeroed - bytesZeroedBefore;
+            Console.WriteLine($"Trimmed {trimmedStringCount} unused strings, kept {remainingStringCount} strings");
+            Console.WriteLine($"#Strings heap: {originalSize:N0} bytes total, {trimmedBytes:N0} bytes trimmed ({(trimmedBytes * 100.0 / originalSize):F2}%), {remainingBytes:N0} bytes remaining ({(remainingBytes * 100.0 / originalSize):F2}%)");
+
+            return (originalSize, trimmedBytes, remainingBytes);
+        }
+
+        /// <summary>
+        /// 收集所有被保留元数据引用的字符串偏移
+        /// </summary>
+        private HashSet<uint> CollectUsedStringOffsets()
+        {
+            var usedOffsets = new HashSet<uint>();
+
+            // Always keep offset 0 (empty string)
+            usedOffsets.Add(0);
+
+            // Collect from preserved TypeDef entries
+            if (_metadata.TypeDefTable != null)
+            {
+                for (int i = 0; i < _metadata.TypeDefTable.Length; i++)
+                {
+                    // Skip trimmed types
+                    if (i > 0 && ShouldTrimType(i))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[i];
+                    usedOffsets.Add(typeDef.TypeName);
+                    usedOffsets.Add(typeDef.TypeNamespace);
+                }
+            }
+
+            // Collect from preserved MethodDef entries
+            if (_metadata.MethodDefTable != null && _metadata.TypeDefTable != null)
+            {
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    // Skip trimmed types
+                    if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    string typeName = GetTypeName(typeDef);
+
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = ReadString(method.Name);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        // Skip trimmed methods (only in method-level trimming)
+                        // For class-level trimming, all methods of preserved types are kept
+                        if (!ShouldTrimMethod(methodFullName))
+                        {
+                            usedOffsets.Add(method.Name);
+                        }
+                    }
+                }
+            }
+
+            // Collect from preserved Field entries
+            if (_metadata.FieldTable != null && _metadata.TypeDefTable != null)
+            {
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    // Skip trimmed types
+                    if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+
+                    uint fieldStart = typeDef.FieldList;
+                    uint fieldEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].FieldList
+                        : (uint)(_metadata.FieldTable.Length) + 1;
+
+                    for (uint fieldIdx = fieldStart; fieldIdx < fieldEnd; fieldIdx++)
+                    {
+                        if (fieldIdx == 0 || fieldIdx > _metadata.FieldTable.Length)
+                            continue;
+
+                        int fieldIndex = (int)fieldIdx - 1;
+                        var field = _metadata.FieldTable[fieldIndex];
+                        usedOffsets.Add(field.Name);
+                    }
+                }
+            }
+
+            // Collect from preserved Param entries
+            if (_metadata.ParamTable != null && _metadata.MethodDefTable != null && _metadata.TypeDefTable != null)
+            {
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    // Skip trimmed types
+                    if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    string typeName = GetTypeName(typeDef);
+
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = ReadString(method.Name);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        // Skip trimmed methods
+                        if (ShouldTrimMethod(methodFullName))
+                            continue;
+
+                        uint paramStart = method.ParamList;
+                        uint paramEnd = methodIndex < _metadata.MethodDefTable.Length - 1
+                            ? _metadata.MethodDefTable[methodIndex + 1].ParamList
+                            : (uint)_metadata.ParamTable.Length + 1;
+
+                        for (uint paramIdx = paramStart; paramIdx < paramEnd; paramIdx++)
+                        {
+                            if (paramIdx == 0 || paramIdx > _metadata.ParamTable.Length)
+                                continue;
+
+                            int paramIndex = (int)paramIdx - 1;
+                            var param = _metadata.ParamTable[paramIndex];
+                            usedOffsets.Add(param.Name);
+                        }
+                    }
+                }
+            }
+
+            // Collect from shared tables (always preserved)
+            // TypeRef
+            if (_metadata.TypeRefTable != null)
+            {
+                foreach (var typeRef in _metadata.TypeRefTable)
+                {
+                    usedOffsets.Add(typeRef.TypeName);
+                    usedOffsets.Add(typeRef.TypeNamespace);
+                }
+            }
+
+            // MemberRef
+            if (_metadata.MemberRefTable != null)
+            {
+                foreach (var memberRef in _metadata.MemberRefTable)
+                {
+                    usedOffsets.Add(memberRef.Name);
+                }
+            }
+
+            // Module
+            if (_metadata.ModuleTable != null)
+            {
+                foreach (var module in _metadata.ModuleTable)
+                {
+                    usedOffsets.Add(module.Name);
+                }
+            }
+
+            // Assembly
+            if (_metadata.AssemblyTable != null)
+            {
+                foreach (var assembly in _metadata.AssemblyTable)
+                {
+                    usedOffsets.Add(assembly.Name);
+                    usedOffsets.Add(assembly.Culture);
+                }
+            }
+
+            // AssemblyRef
+            if (_metadata.AssemblyRefTable != null)
+            {
+                foreach (var assemblyRef in _metadata.AssemblyRefTable)
+                {
+                    usedOffsets.Add(assemblyRef.Name);
+                    usedOffsets.Add(assemblyRef.Culture);
+                }
+            }
+
+            // ModuleRef
+            if (_metadata.ModuleRefTable != null)
+            {
+                foreach (var moduleRef in _metadata.ModuleRefTable)
+                {
+                    usedOffsets.Add(moduleRef.Name);
+                }
+            }
+
+            // File
+            if (_metadata.FileTable != null)
+            {
+                foreach (var file in _metadata.FileTable)
+                {
+                    usedOffsets.Add(file.Name);
+                }
+            }
+
+            // Property
+            if (_metadata.PropertyTable != null)
+            {
+                // Need to check if the property belongs to a preserved type
+                // This requires PropertyMap table
+                if (_metadata.PropertyMapTable != null && _metadata.TypeDefTable != null)
+                {
+                    foreach (var propMap in _metadata.PropertyMapTable)
+                    {
+                        int typeIndex = (int)propMap.Parent - 1;
+                        if (typeIndex >= 0 && typeIndex < _metadata.TypeDefTable.Length)
+                        {
+                            // Skip trimmed types
+                            if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                                continue;
+
+                            // Find property range for this type
+                            uint propStart = propMap.PropertyList;
+                            uint propEnd = propStart + 1; // Simplified, should find actual range
+
+                            for (uint propIdx = propStart; propIdx < propEnd && propIdx <= _metadata.PropertyTable.Length; propIdx++)
+                            {
+                                if (propIdx == 0)
+                                    continue;
+
+                                int propIndex = (int)propIdx - 1;
+                                if (propIndex < _metadata.PropertyTable.Length)
+                                {
+                                    var prop = _metadata.PropertyTable[propIndex];
+                                    usedOffsets.Add(prop.Name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Event
+            if (_metadata.EventTable != null)
+            {
+                // Similar to Property, need EventMap table
+                if (_metadata.EventMapTable != null && _metadata.TypeDefTable != null)
+                {
+                    foreach (var eventMap in _metadata.EventMapTable)
+                    {
+                        int typeIndex = (int)eventMap.Parent - 1;
+                        if (typeIndex >= 0 && typeIndex < _metadata.TypeDefTable.Length)
+                        {
+                            // Skip trimmed types
+                            if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                                continue;
+
+                            // Find event range for this type
+                            uint eventStart = eventMap.EventList;
+                            uint eventEnd = eventStart + 1; // Simplified
+
+                            for (uint eventIdx = eventStart; eventIdx < eventEnd && eventIdx <= _metadata.EventTable.Length; eventIdx++)
+                            {
+                                if (eventIdx == 0)
+                                    continue;
+
+                                int evtIndex = (int)eventIdx - 1;
+                                if (evtIndex < _metadata.EventTable.Length)
+                                {
+                                    var evt = _metadata.EventTable[evtIndex];
+                                    usedOffsets.Add(evt.Name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return usedOffsets;
+        }
+
+        /// <summary>
+        /// 解析#Strings堆，返回所有字符串的偏移和长度
+        /// </summary>
+        private Dictionary<uint, uint> ParseStringHeap()
+        {
+            var stringRanges = new Dictionary<uint, uint>();
+
+            if (!_metadata.Streams.ContainsKey("#Strings"))
+                return stringRanges;
+
+            var stringsData = _metadata.Streams["#Strings"].Data;
+
+            // Offset 0 is always empty string
+            stringRanges[0] = 0;
+
+            uint offset = 1; // Start from 1 (skip the initial null byte)
+            while (offset < stringsData.Length)
+            {
+                uint start = offset;
+                
+                // Find the null terminator
+                while (offset < stringsData.Length && stringsData[offset] != 0)
+                {
+                    offset++;
+                }
+
+                // Calculate string length (including null terminator)
+                uint length = offset - start + 1;
+                
+                if (length > 1) // Non-empty string
+                {
+                    stringRanges[start] = length;
+                }
+
+                offset++; // Move past the null terminator
+            }
+
+            return stringRanges;
         }
 
         #endregion
