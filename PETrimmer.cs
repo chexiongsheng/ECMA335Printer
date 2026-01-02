@@ -222,14 +222,14 @@ namespace ECMA335Printer
 
             long trimmedBytes = _totalBytesZeroed;
 
-            // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
-            long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = trimmedBytes + remainingBytes + baseOverhead;
-            long unaccountedBytes = _fileData.Length - accountedBytes;
-
             // Phase 3: Trim unused strings in #Strings heap
             Console.WriteLine($"\n=== Phase 3: String Trimming ===");
             var (stringsOriginalSize, trimmedStringBytes, stringsRemainingBytes) = TrimUnusedStrings();
+
+            // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
+            long baseOverhead = CalculateBaseOverhead();
+            long accountedBytes = _totalBytesZeroed + remainingBytes + baseOverhead;
+            long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Total types: {totalClassCount}");
