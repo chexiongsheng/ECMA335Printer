@@ -154,16 +154,27 @@ namespace ECMA335Printer
 
             long trimmedBytes = _totalBytesZeroed;
 
+            // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
+            long baseOverhead = CalculateBaseOverhead();
+            long accountedBytes = trimmedBytes + remainingBytes + baseOverhead;
+            long unaccountedBytes = _fileData.Length - accountedBytes;
+
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Total types: {totalClassCount}");
             Console.WriteLine($"Trimmed types: {trimmedClassCount}");
             Console.WriteLine($"Remaining types: {remainingClassCount}");
+            Console.WriteLine($"\nByte Statistics:");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
             Console.WriteLine($"Trimmed bytes: {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
+            if (unaccountedBytes != 0)
+            {
+                Console.WriteLine($"Unaccounted: {unaccountedBytes:N0} ({(unaccountedBytes * 100.0 / _fileData.Length):F2}%)");
+            }
             if (trimmedClassCount > 0)
             {
-                Console.WriteLine($"Average bytes per trimmed type: {trimmedBytes / trimmedClassCount:N0}");
+                Console.WriteLine($"\nAverage bytes per trimmed type: {trimmedBytes / trimmedClassCount:N0}");
             }
             if (remainingClassCount > 0)
             {
@@ -719,6 +730,90 @@ namespace ECMA335Printer
                 tagBits++;
 
             return (maxRows << tagBits) < 65536 ? 2 : 4;
+        }
+
+        /// <summary>
+        /// 计算基础开销（PE头部、共享元数据、堆数据、其他节等）
+        /// </summary>
+        private long CalculateBaseOverhead()
+        {
+            long overhead = 0;
+
+            // 1. PE Headers (DOS Header, PE Header, Optional Header, Section Headers)
+            // Typically ends where first section begins
+            if (_sections.Count > 0)
+            {
+                overhead += _sections[0].PointerToRawData;
+            }
+
+            // 2. Metadata Root and Stream Headers
+            // This is the metadata header before the actual streams
+            if (_metadata.Streams.Count > 0)
+            {
+                // Estimate: Metadata root header + stream headers
+                // Typically around 100-200 bytes depending on number of streams
+                overhead += 100 + (_metadata.Streams.Count * 20);
+            }
+
+            // 3. Shared Heaps (#Strings, #US, #GUID, #Blob)
+            // These contain shared data used by all types
+            if (_metadata.Streams.ContainsKey("#Strings"))
+                overhead += _metadata.Streams["#Strings"].Data.Length;
+            if (_metadata.Streams.ContainsKey("#US"))
+                overhead += _metadata.Streams["#US"].Data.Length;
+            if (_metadata.Streams.ContainsKey("#GUID"))
+                overhead += _metadata.Streams["#GUID"].Data.Length;
+            if (_metadata.Streams.ContainsKey("#Blob"))
+                overhead += _metadata.Streams["#Blob"].Data.Length;
+
+            // 4. Shared Metadata Tables (Module, Assembly, AssemblyRef, TypeRef, MemberRef, etc.)
+            // These are not specific to any TypeDef
+            if (_metadata.Streams.ContainsKey("#~"))
+            {
+                // Estimate table header size
+                overhead += 24; // Table stream header
+
+                // Add sizes of shared tables
+                int[] sharedTables = { 0x00, 0x01, 0x0A, 0x20, 0x23, 0x26, 0x27 }; // Module, TypeRef, MemberRef, Assembly, AssemblyRef, File, ExportedType
+                foreach (int tableId in sharedTables)
+                {
+                    if (tableId < _metadata.TableRowCounts.Length && _metadata.TableRowCounts[tableId] > 0)
+                    {
+                        int rowSize = EstimateTableRowSize(tableId);
+                        overhead += _metadata.TableRowCounts[tableId] * rowSize;
+                    }
+                }
+            }
+
+            // 5. Other sections (.rsrc, .reloc, etc.)
+            foreach (var section in _sections)
+            {
+                if (section.Name != ".text")
+                {
+                    overhead += section.SizeOfRawData;
+                }
+            }
+
+            return overhead;
+        }
+
+        /// <summary>
+        /// 估算元数据表行的大小（简化版本）
+        /// </summary>
+        private int EstimateTableRowSize(int tableId)
+        {
+            // Simplified estimation based on ECMA-335 table definitions
+            switch (tableId)
+            {
+                case 0x00: return 10; // Module
+                case 0x01: return 6;  // TypeRef
+                case 0x0A: return 6;  // MemberRef
+                case 0x20: return 16; // Assembly
+                case 0x23: return 12; // AssemblyRef
+                case 0x26: return 4;  // File
+                case 0x27: return 8;  // ExportedType
+                default: return 8;    // Default estimate
+            }
         }
 
         private uint RVAToFileOffset(uint rva)
