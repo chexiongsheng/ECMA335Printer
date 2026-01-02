@@ -3,6 +3,11 @@ using System.Text;
 namespace ECMA335Printer
 {
     /// <summary>
+    /// 字节操作委托：用于处理字节范围（清零或统计）
+    /// </summary>
+    delegate void ByteOperationDelegate(uint offset, uint length);
+
+    /// <summary>
     /// PE文件剪裁器 - 类粒度剪裁
     /// </summary>
     class PETrimmer
@@ -113,10 +118,14 @@ namespace ECMA335Printer
             }
 
             int trimmedClassCount = 0;
+            int remainingClassCount = 0;
             int totalClassCount = _metadata.TypeDefTable.Length;
             _totalBytesZeroed = 0; // Reset byte counter
 
-            // Iterate through all types
+            long remainingBytes = 0;
+
+            // Single pass: Trim and count statistics
+            Console.WriteLine("\n=== Performing Trimming ===");
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -132,21 +141,33 @@ namespace ECMA335Printer
                 if (ShouldTrimType(typeIndex))
                 {
                     Console.WriteLine($"Trimming type: {typeName}");
-                    TrimType(typeIndex, typeDef);
+                    WalkType(typeIndex, typeDef, ZeroBytes);
                     trimmedClassCount++;
                 }
+                else
+                {
+                    // Count remaining bytes using a closure
+                    WalkType(typeIndex, typeDef, (offset, length) => remainingBytes += length);
+                    remainingClassCount++;
+                }
             }
+
+            long trimmedBytes = _totalBytesZeroed;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Total types: {totalClassCount}");
             Console.WriteLine($"Trimmed types: {trimmedClassCount}");
-            Console.WriteLine($"Remaining types: {totalClassCount - trimmedClassCount}");
+            Console.WriteLine($"Remaining types: {remainingClassCount}");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
-            Console.WriteLine($"Trimmed bytes: {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes: {(_fileData.Length - _totalBytesZeroed):N0} ({((_fileData.Length - _totalBytesZeroed) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes: {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
             if (trimmedClassCount > 0)
             {
-                Console.WriteLine($"Average bytes per trimmed type: {_totalBytesZeroed / trimmedClassCount:N0}");
+                Console.WriteLine($"Average bytes per trimmed type: {trimmedBytes / trimmedClassCount:N0}");
+            }
+            if (remainingClassCount > 0)
+            {
+                Console.WriteLine($"Average bytes per remaining type: {remainingBytes / remainingClassCount:N0}");
             }
         }
 
@@ -160,30 +181,30 @@ namespace ECMA335Printer
         }
 
         /// <summary>
-        /// 剪裁指定类型（清零所有相关数据）
+        /// 遍历指定类型（处理所有相关数据）
         /// </summary>
-        private void TrimType(int typeIndex, TypeDefRow typeDef)
+        private void WalkType(int typeIndex, TypeDefRow typeDef, ByteOperationDelegate operation)
         {
-            // 1. Trim all methods of this type
-            TrimTypeMethods(typeIndex, typeDef);
+            // 1. Walk all methods of this type
+            WalkTypeMethods(typeIndex, typeDef, operation);
 
-            // 2. Trim all fields of this type
-            TrimTypeFields(typeIndex, typeDef);
+            // 2. Walk all fields of this type
+            WalkTypeFields(typeIndex, typeDef, operation);
 
-            // 3. Trim properties
-            TrimTypeProperties(typeIndex);
+            // 3. Walk properties
+            WalkTypeProperties(typeIndex, operation);
 
-            // 4. Trim events
-            TrimTypeEvents(typeIndex);
+            // 4. Walk events
+            WalkTypeEvents(typeIndex, operation);
 
-            // 5. Zero out TypeDef row data (but keep the row structure)
-            ZeroTypeDefRow(typeIndex);
+            // 5. Process TypeDef row data (but keep the row structure)
+            ProcessTypeDefRow(typeIndex, operation);
         }
 
         /// <summary>
-        /// 剪裁类型的所有方法
+        /// 遍历类型的所有方法
         /// </summary>
-        private void TrimTypeMethods(int typeIndex, TypeDefRow typeDef)
+        private void WalkTypeMethods(int typeIndex, TypeDefRow typeDef, ByteOperationDelegate operation)
         {
             uint methodStart = typeDef.MethodList;
             uint methodEnd;
@@ -202,43 +223,43 @@ namespace ECMA335Printer
                 if (methodIdx == 0 || methodIdx > (_metadata.MethodDefTable?.Length ?? 0))
                     continue;
 
-                TrimMethod((int)methodIdx - 1); // Convert to 0-based index
+                WalkMethod((int)methodIdx - 1, operation); // Convert to 0-based index
             }
         }
 
         /// <summary>
-        /// 剪裁单个方法
+        /// 遍历单个方法
         /// </summary>
-        private void TrimMethod(int methodIndex)
+        private void WalkMethod(int methodIndex, ByteOperationDelegate operation)
         {
             if (_metadata.MethodDefTable == null || methodIndex >= _metadata.MethodDefTable.Length)
                 return;
 
             var method = _metadata.MethodDefTable[methodIndex];
 
-            // 1. Zero method body (IL code)
+            // 1. Process method body (IL code)
             if (method.RVA != 0)
             {
-                ZeroMethodBody(method.RVA);
+                ProcessMethodBody(method.RVA, operation);
             }
 
-            // 2. Zero method signature in Blob heap
+            // 2. Process method signature in Blob heap
             if (method.Signature != 0)
             {
-                ZeroBlobData(method.Signature);
+                ProcessBlobData(method.Signature, operation);
             }
 
-            // 3. Zero parameters
-            TrimMethodParameters(methodIndex, method);
+            // 3. Process parameters
+            WalkMethodParameters(methodIndex, method, operation);
 
-            // 4. Zero MethodDef row in metadata table
-            ZeroMethodDefRow(methodIndex);
+            // 4. Process MethodDef row in metadata table
+            ProcessMethodDefRow(methodIndex, operation);
         }
 
         /// <summary>
-        /// 剪裁方法参数
+        /// 遍历方法参数
         /// </summary>
-        private void TrimMethodParameters(int methodIndex, MethodDefRow method)
+        private void WalkMethodParameters(int methodIndex, MethodDefRow method, ByteOperationDelegate operation)
         {
             if (_metadata.ParamTable == null || _metadata.ParamTable.Length == 0)
                 return;
@@ -260,14 +281,14 @@ namespace ECMA335Printer
                 if (paramIdx == 0 || paramIdx > _metadata.ParamTable.Length)
                     continue;
 
-                ZeroParamRow((int)paramIdx - 1);
+                ProcessParamRow((int)paramIdx - 1, operation);
             }
         }
 
         /// <summary>
-        /// 剪裁类型的所有字段
+        /// 遍历类型的所有字段
         /// </summary>
-        private void TrimTypeFields(int typeIndex, TypeDefRow typeDef)
+        private void WalkTypeFields(int typeIndex, TypeDefRow typeDef, ByteOperationDelegate operation)
         {
             uint fieldStart = typeDef.FieldList;
             uint fieldEnd;
@@ -286,46 +307,46 @@ namespace ECMA335Printer
                 if (fieldIdx == 0 || fieldIdx > (_metadata.FieldTable?.Length ?? 0))
                     continue;
 
-                TrimField((int)fieldIdx - 1);
+                WalkField((int)fieldIdx - 1, operation);
             }
         }
 
         /// <summary>
-        /// 剪裁单个字段
+        /// 遍历单个字段
         /// </summary>
-        private void TrimField(int fieldIndex)
+        private void WalkField(int fieldIndex, ByteOperationDelegate operation)
         {
             if (_metadata.FieldTable == null || fieldIndex >= _metadata.FieldTable.Length)
                 return;
 
             var field = _metadata.FieldTable[fieldIndex];
 
-            // 1. Zero field signature in Blob heap
+            // 1. Process field signature in Blob heap
             if (field.Signature != 0)
             {
-                ZeroBlobData(field.Signature);
+                ProcessBlobData(field.Signature, operation);
             }
 
-            // 2. Zero FieldRVA if exists
+            // 2. Process FieldRVA if exists
             if (_metadata.FieldRVATable != null)
             {
                 foreach (var fieldRVA in _metadata.FieldRVATable)
                 {
                     if (fieldRVA.Field == fieldIndex + 1) // 1-based
                     {
-                        ZeroFieldRVAData(fieldRVA.RVA);
+                        ProcessFieldRVAData(fieldRVA.RVA, operation);
                     }
                 }
             }
 
-            // 3. Zero Field row in metadata table
-            ZeroFieldRow(fieldIndex);
+            // 3. Process Field row in metadata table
+            ProcessFieldRow(fieldIndex, operation);
         }
 
         /// <summary>
-        /// 剪裁类型的属性
+        /// 遍历类型的属性
         /// </summary>
-        private void TrimTypeProperties(int typeIndex)
+        private void WalkTypeProperties(int typeIndex, ByteOperationDelegate operation)
         {
             if (_metadata.PropertyMapTable == null || _metadata.PropertyTable == null)
                 return;
@@ -342,9 +363,9 @@ namespace ECMA335Printer
         }
 
         /// <summary>
-        /// 剪裁类型的事件
+        /// 遍历类型的事件
         /// </summary>
-        private void TrimTypeEvents(int typeIndex)
+        private void WalkTypeEvents(int typeIndex, ByteOperationDelegate operation)
         {
             if (_metadata.EventMapTable == null || _metadata.EventTable == null)
                 return;
@@ -359,12 +380,12 @@ namespace ECMA335Printer
             }
         }
 
-        #region Zero Operations
+        #region Process Operations
 
         /// <summary>
-        /// 清零方法体
+        /// 处理方法体
         /// </summary>
-        private void ZeroMethodBody(uint rva)
+        private void ProcessMethodBody(uint rva, ByteOperationDelegate operation)
         {
             try
             {
@@ -379,7 +400,7 @@ namespace ECMA335Printer
                 {
                     uint codeSize = (uint)(firstByte >> 2);
                     uint totalSize = 1 + codeSize;
-                    ZeroBytes(offset, totalSize);
+                    operation(offset, totalSize);
                 }
                 else if ((firstByte & 0x03) == 0x03) // Fat format
                 {
@@ -407,19 +428,19 @@ namespace ECMA335Printer
                         }
                     }
                     
-                    ZeroBytes(offset, totalSize);
+                    operation(offset, totalSize);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Failed to zero method body at RVA 0x{rva:X}: {ex.Message}");
+                Console.WriteLine($"Warning: Failed to process method body at RVA 0x{rva:X}: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// 清零Blob数据
+        /// 处理Blob数据
         /// </summary>
-        private void ZeroBlobData(uint blobOffset)
+        private void ProcessBlobData(uint blobOffset, ByteOperationDelegate operation)
         {
             if (!_metadata.Streams.ContainsKey("#Blob"))
                 return;
@@ -456,14 +477,14 @@ namespace ECMA335Printer
                 return;
             }
 
-            // Zero the blob data (but keep the length header)
-            ZeroBytes((uint)(pos + headerSize), (uint)length);
+            // Process the blob data (but keep the length header)
+            operation((uint)(pos + headerSize), (uint)length);
         }
 
         /// <summary>
-        /// 清零FieldRVA数据
+        /// 处理FieldRVA数据
         /// </summary>
-        private void ZeroFieldRVAData(uint rva)
+        private void ProcessFieldRVAData(uint rva, ByteOperationDelegate operation)
         {
             try
             {
@@ -480,9 +501,9 @@ namespace ECMA335Printer
         }
 
         /// <summary>
-        /// 清零TypeDef行
+        /// 处理TypeDef行
         /// </summary>
-        private void ZeroTypeDefRow(int typeIndex)
+        private void ProcessTypeDefRow(int typeIndex, ByteOperationDelegate operation)
         {
             if (_metadata.TypeDefTable == null || typeIndex >= _metadata.TypeDefTable.Length)
                 return;
@@ -500,16 +521,16 @@ namespace ECMA335Printer
             uint rowOffset = GetTableRowOffset(0x02, typeIndex); // 0x02 = TypeDef table
             if (rowOffset > 0)
             {
-                // Zero only the first 4 fields, keep FieldList and MethodList for index integrity
+                // Process only the first 4 fields, keep FieldList and MethodList for index integrity
                 int bytesToZero = 4 + _metadata.StringIndexSize * 2 + GetCodedIndexSize(new[] { 0x02, 0x01, 0x1B });
-                ZeroBytes(rowOffset, (uint)bytesToZero);
+                operation(rowOffset, (uint)bytesToZero);
             }
         }
 
         /// <summary>
-        /// 清零MethodDef行
+        /// 处理MethodDef行
         /// </summary>
-        private void ZeroMethodDefRow(int methodIndex)
+        private void ProcessMethodDefRow(int methodIndex, ByteOperationDelegate operation)
         {
             if (_metadata.MethodDefTable == null || methodIndex >= _metadata.MethodDefTable.Length)
                 return;
@@ -525,16 +546,16 @@ namespace ECMA335Printer
             uint rowOffset = GetTableRowOffset(0x06, methodIndex); // 0x06 = MethodDef table
             if (rowOffset > 0)
             {
-                // Zero all fields except ParamList (keep it for index integrity)
+                // Process all fields except ParamList (keep it for index integrity)
                 int bytesToZero = 4 + 2 + 2 + _metadata.StringIndexSize + _metadata.BlobIndexSize;
-                ZeroBytes(rowOffset, (uint)bytesToZero);
+                operation(rowOffset, (uint)bytesToZero);
             }
         }
 
         /// <summary>
-        /// 清零Field行
+        /// 处理Field行
         /// </summary>
-        private void ZeroFieldRow(int fieldIndex)
+        private void ProcessFieldRow(int fieldIndex, ByteOperationDelegate operation)
         {
             if (_metadata.FieldTable == null || fieldIndex >= _metadata.FieldTable.Length)
                 return;
@@ -548,14 +569,14 @@ namespace ECMA335Printer
             uint rowOffset = GetTableRowOffset(0x04, fieldIndex); // 0x04 = Field table
             if (rowOffset > 0)
             {
-                ZeroBytes(rowOffset, (uint)rowSize);
+                operation(rowOffset, (uint)rowSize);
             }
         }
 
         /// <summary>
-        /// 清零Param行
+        /// 处理Param行
         /// </summary>
-        private void ZeroParamRow(int paramIndex)
+        private void ProcessParamRow(int paramIndex, ByteOperationDelegate operation)
         {
             if (_metadata.ParamTable == null || paramIndex >= _metadata.ParamTable.Length)
                 return;
@@ -568,12 +589,12 @@ namespace ECMA335Printer
             uint rowOffset = GetTableRowOffset(0x08, paramIndex); // 0x08 = Param table
             if (rowOffset > 0)
             {
-                ZeroBytes(rowOffset, (uint)rowSize);
+                operation(rowOffset, (uint)rowSize);
             }
         }
 
         /// <summary>
-        /// 清零指定范围的字节
+        /// 清零指定范围的字节（用于实际剪裁）
         /// </summary>
         private void ZeroBytes(uint offset, uint length)
         {
@@ -587,6 +608,11 @@ namespace ECMA335Printer
             
             _totalBytesZeroed += length; // Track zeroed bytes
         }
+
+        /// <summary>
+        /// 统计字节数（用于统计分析，不修改文件数据）
+        /// </summary>
+
 
         #endregion
 
