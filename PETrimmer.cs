@@ -8,7 +8,7 @@ namespace ECMA335Printer
     delegate void ByteOperationDelegate(uint offset, uint length);
 
     /// <summary>
-    /// PE文件剪裁器 - 类粒度剪裁
+    /// PE文件剪裁器 - 支持类粒度和方法粒度剪裁
     /// </summary>
     class PETrimmer
     {
@@ -105,6 +105,112 @@ namespace ECMA335Printer
         }
 
         /// <summary>
+        /// 执行方法粒度剪裁
+        /// </summary>
+        public void TrimAtMethodLevel()
+        {
+            Console.WriteLine("\n=== Starting Method-Level Trimming ===");
+
+            if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
+            {
+                Console.WriteLine("No TypeDef table found");
+                return;
+            }
+
+            int trimmedMethodCount = 0;
+            int remainingMethodCount = 0;
+            int totalMethodCount = _metadata.MethodDefTable?.Length ?? 0;
+            _totalBytesZeroed = 0; // Reset byte counter
+
+            long remainingBytes = 0;
+
+            // Single pass: Trim methods and count statistics
+            Console.WriteLine("\n=== Performing Method-Level Trimming ===");
+            for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+            {
+                var typeDef = _metadata.TypeDefTable[typeIndex];
+                
+                // Skip <Module> type (first type, index 0)
+                if (typeIndex == 0)
+                    continue;
+
+                // Get type name
+                string typeName = GetTypeName(typeDef);
+                
+                // Process each method in this type
+                uint methodStart = typeDef.MethodList;
+                uint methodEnd;
+
+                if (typeIndex < _metadata.TypeDefTable.Length - 1)
+                {
+                    methodEnd = _metadata.TypeDefTable[typeIndex + 1].MethodList;
+                }
+                else
+                {
+                    methodEnd = (uint)(_metadata.MethodDefTable?.Length ?? 0) + 1;
+                }
+
+                for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                {
+                    if (methodIdx == 0 || methodIdx > (_metadata.MethodDefTable?.Length ?? 0))
+                        continue;
+
+                    int methodIndex = (int)methodIdx - 1; // Convert to 0-based index
+                    var method = _metadata.MethodDefTable[methodIndex];
+                    string methodName = ReadString(method.Name);
+                    string methodFullName = $"{typeName}.{methodName}";
+
+                    // Check if this method should be trimmed
+                    if (ShouldTrimMethod(methodFullName))
+                    {
+                        Console.WriteLine($"Trimming method: {methodFullName}");
+                        WalkMethod(methodIndex, ZeroBytes);
+                        trimmedMethodCount++;
+                    }
+                    else
+                    {
+                        // Count remaining bytes using a closure
+                        WalkMethod(methodIndex, (offset, length) => remainingBytes += length);
+                        remainingMethodCount++;
+                    }
+                }
+
+                // For method-level trimming, we still need to count type-level data
+                // (TypeDef rows, Field data, etc.) as remaining bytes
+                WalkTypeNonMethodData(typeIndex, typeDef, (offset, length) => remainingBytes += length);
+            }
+
+            long trimmedBytes = _totalBytesZeroed;
+
+            // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
+            long baseOverhead = CalculateBaseOverhead();
+            long accountedBytes = trimmedBytes + remainingBytes + baseOverhead;
+            long unaccountedBytes = _fileData.Length - accountedBytes;
+
+            Console.WriteLine($"\n=== Trimming Complete ===");
+            Console.WriteLine($"Total methods: {totalMethodCount}");
+            Console.WriteLine($"Trimmed methods: {trimmedMethodCount}");
+            Console.WriteLine($"Remaining methods: {remainingMethodCount}");
+            Console.WriteLine($"\nByte Statistics:");
+            Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
+            Console.WriteLine($"Trimmed bytes: {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
+            if (unaccountedBytes != 0)
+            {
+                Console.WriteLine($"Unaccounted: {unaccountedBytes:N0} ({(unaccountedBytes * 100.0 / _fileData.Length):F2}%)");
+            }
+            if (trimmedMethodCount > 0)
+            {
+                Console.WriteLine($"\nAverage bytes per trimmed method: {trimmedBytes / trimmedMethodCount:N0}");
+            }
+            if (remainingMethodCount > 0)
+            {
+                Console.WriteLine($"Average bytes per remaining method: {remainingBytes / remainingMethodCount:N0}");
+            }
+        }
+
+        /// <summary>
         /// 执行类粒度剪裁
         /// </summary>
         public void TrimAtClassLevel()
@@ -189,6 +295,34 @@ namespace ECMA335Printer
         {
             // Simply check if the type is in the invoked types set
             return !_invokedTypes.Contains(typeIndex);
+        }
+
+        /// <summary>
+        /// 判断方法是否应该被剪裁（方法级别剪裁）
+        /// </summary>
+        private bool ShouldTrimMethod(string methodFullName)
+        {
+            // Check if the method is in the invoked methods set
+            return !_invokedMethods.Contains(methodFullName);
+        }
+
+        /// <summary>
+        /// 遍历类型的非方法数据（字段、属性、事件、TypeDef行等）
+        /// 用于方法级别剪裁时统计类型级别的数据
+        /// </summary>
+        private void WalkTypeNonMethodData(int typeIndex, TypeDefRow typeDef, ByteOperationDelegate operation)
+        {
+            // 1. Walk all fields of this type
+            WalkTypeFields(typeIndex, typeDef, operation);
+
+            // 2. Walk properties
+            WalkTypeProperties(typeIndex, operation);
+
+            // 3. Walk events
+            WalkTypeEvents(typeIndex, operation);
+
+            // 4. Process TypeDef row data (but keep the row structure)
+            ProcessTypeDefRow(typeIndex, operation);
         }
 
         /// <summary>

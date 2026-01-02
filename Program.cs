@@ -12,18 +12,21 @@ namespace ECMA335Printer
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file>]");
+                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file>] [-s1 <stats-file>]");
                 Console.WriteLine("  -v: Verbose mode, print detailed metadata information");
                 Console.WriteLine("  -s0 <stats-file>: Class-level trimming based on invoke statistics");
+                Console.WriteLine("  -s1 <stats-file>: Method-level trimming based on invoke statistics");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -v");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json");
+                Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s1 invoke_stats.json");
                 return;
             }
 
             string assemblyPath = args[0];
             bool verbose = false;
             string? statsFile = null;
+            int trimmingLevel = -1; // -1: no trimming, 0: class-level, 1: method-level
 
             // Parse arguments
             for (int i = 1; i < args.Length; i++)
@@ -35,6 +38,13 @@ namespace ECMA335Printer
                 else if (args[i] == "-s0" && i + 1 < args.Length)
                 {
                     statsFile = args[i + 1];
+                    trimmingLevel = 0;
+                    i++; // Skip next argument
+                }
+                else if (args[i] == "-s1" && i + 1 < args.Length)
+                {
+                    statsFile = args[i + 1];
+                    trimmingLevel = 1;
                     i++; // Skip next argument
                 }
             }
@@ -47,10 +57,17 @@ namespace ECMA335Printer
 
             try
             {
-                if (statsFile != null)
+                if (statsFile != null && trimmingLevel >= 0)
                 {
-                    // Perform class-level trimming
-                    PerformClassLevelTrimming(assemblyPath, statsFile);
+                    // Perform trimming based on level
+                    if (trimmingLevel == 0)
+                    {
+                        PerformClassLevelTrimming(assemblyPath, statsFile);
+                    }
+                    else if (trimmingLevel == 1)
+                    {
+                        PerformMethodLevelTrimming(assemblyPath, statsFile);
+                    }
                 }
                 else
                 {
@@ -115,6 +132,39 @@ namespace ECMA335Printer
 
             // Save trimmed file
             string outputPath = assemblyPath + ".s0";
+            trimmer.SaveTrimmedFile(outputPath);
+
+            Console.WriteLine($"\n=== Trimming Complete ===");
+            Console.WriteLine($"Output file: {outputPath}");
+        }
+
+        static void PerformMethodLevelTrimming(string assemblyPath, string statsFile)
+        {
+            Console.WriteLine($"=== Method-Level Trimming ===");
+            Console.WriteLine($"Assembly: {assemblyPath}");
+            Console.WriteLine($"Stats file: {statsFile}");
+
+            // Parse the PE file
+            var peFile = new PEFile(assemblyPath);
+            peFile.Parse();
+
+            // Parse the stats file
+            var statsParser = new InvokeStatsParser(statsFile);
+            statsParser.Parse();
+
+            // Get assembly name from path
+            string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+            
+            // Get invoked methods for this assembly
+            var invokedMethods = statsParser.GetInvokedMethods(assemblyName);
+            Console.WriteLine($"Found {invokedMethods.Count} invoked methods in stats");
+
+            // Create trimmer and perform trimming
+            var trimmer = new PETrimmer(peFile, invokedMethods);
+            trimmer.TrimAtMethodLevel();
+
+            // Save trimmed file
+            string outputPath = assemblyPath + ".s1";
             trimmer.SaveTrimmedFile(outputPath);
 
             Console.WriteLine($"\n=== Trimming Complete ===");
