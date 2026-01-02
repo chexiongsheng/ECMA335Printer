@@ -302,8 +302,36 @@ namespace ECMA335Printer
         /// </summary>
         private bool ShouldTrimMethod(string methodFullName)
         {
+            // Normalize the method name from metadata format to stats format
+            // .ctor -> _ctor, .cctor -> _cctor
+            string normalizedName = NormalizeMethodNameForComparison(methodFullName);
+            
             // Check if the method is in the invoked methods set
-            return !_invokedMethods.Contains(methodFullName);
+            return !_invokedMethods.Contains(normalizedName);
+        }
+
+        /// <summary>
+        /// 规范化方法名用于比较
+        /// 将元数据中的构造函数名称转换为invoke_stats文件中的格式
+        /// TypeName..ctor -> TypeName._ctor
+        /// TypeName..cctor -> TypeName._cctor
+        /// </summary>
+        private string NormalizeMethodNameForComparison(string methodFullName)
+        {
+            // Check for constructor names (they have double dots in metadata)
+            // TypeName..ctor -> TypeName._ctor
+            // TypeName..cctor -> TypeName._cctor
+            
+            if (methodFullName.EndsWith("..ctor"))
+            {
+                return methodFullName.Substring(0, methodFullName.Length - 6) + "._ctor";
+            }
+            else if (methodFullName.EndsWith("..cctor"))
+            {
+                return methodFullName.Substring(0, methodFullName.Length - 7) + "._cctor";
+            }
+
+            return methodFullName;
         }
 
         /// <summary>
