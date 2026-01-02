@@ -19,6 +19,7 @@ namespace ECMA335Printer
         private readonly MetadataRoot _metadata;
         private readonly List<Section> _sections;
         private long _totalBytesZeroed; // Track total bytes zeroed during trimming
+        private bool _isMethodLevelTrimming; // Flag to indicate if we're doing method-level trimming
 
         public PETrimmer(PEFile peFile, HashSet<string> invokedMethods)
         {
@@ -109,6 +110,7 @@ namespace ECMA335Printer
         /// </summary>
         public void TrimAtMethodLevel()
         {
+            _isMethodLevelTrimming = true; // Set flag for method-level trimming
             Console.WriteLine("\n=== Starting Method-Level Trimming (includes Class-Level) ===");
 
             if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
@@ -228,7 +230,7 @@ namespace ECMA335Printer
 
             // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
             long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = _totalBytesZeroed + remainingBytes + baseOverhead;
+            long accountedBytes = _totalBytesZeroed + remainingBytes + stringsRemainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
@@ -244,7 +246,9 @@ namespace ECMA335Printer
             Console.WriteLine($"Trimmed bytes (methods): {trimmedMethodBytes:N0} ({(trimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (code/data): {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (strings): {stringsRemainingBytes:N0} ({(stringsRemainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (total): {(remainingBytes + stringsRemainingBytes):N0} ({((remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"\n#Strings Heap Statistics:");
             Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
@@ -273,6 +277,7 @@ namespace ECMA335Printer
         /// </summary>
         public void TrimAtClassLevel()
         {
+            _isMethodLevelTrimming = false; // Set flag for class-level trimming
             Console.WriteLine("\n=== Starting Class-Level Trimming ===");
 
             if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
@@ -324,7 +329,7 @@ namespace ECMA335Printer
 
             // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
             long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = _totalBytesZeroed + remainingBytes + baseOverhead;
+            long accountedBytes = _totalBytesZeroed + remainingBytes + stringsRemainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
@@ -336,7 +341,9 @@ namespace ECMA335Printer
             Console.WriteLine($"Trimmed bytes (types): {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (code/data): {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (strings): {stringsRemainingBytes:N0} ({(stringsRemainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (total): {(remainingBytes + stringsRemainingBytes):N0} ({((remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"\n#Strings Heap Statistics:");
             Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
@@ -1195,9 +1202,9 @@ namespace ECMA335Printer
                         string methodName = ReadString(method.Name);
                         string methodFullName = $"{typeName}.{methodName}";
 
-                        // Skip trimmed methods (only in method-level trimming)
-                        // For class-level trimming, all methods of preserved types are kept
-                        if (!ShouldTrimMethod(methodFullName))
+                        // In class-level trimming, keep all method names of preserved types
+                        // In method-level trimming, only keep names of preserved methods
+                        if (!_isMethodLevelTrimming || !ShouldTrimMethod(methodFullName))
                         {
                             usedOffsets.Add(method.Name);
                         }
