@@ -12,15 +12,32 @@ namespace ECMA335Printer
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v]");
+                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file>]");
                 Console.WriteLine("  -v: Verbose mode, print detailed metadata information");
+                Console.WriteLine("  -s0 <stats-file>: Class-level trimming based on invoke statistics");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -v");
+                Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json");
                 return;
             }
 
             string assemblyPath = args[0];
-            bool verbose = args.Length > 1 && args[1] == "-v";
+            bool verbose = false;
+            string? statsFile = null;
+
+            // Parse arguments
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (args[i] == "-v")
+                {
+                    verbose = true;
+                }
+                else if (args[i] == "-s0" && i + 1 < args.Length)
+                {
+                    statsFile = args[i + 1];
+                    i++; // Skip next argument
+                }
+            }
 
             if (!File.Exists(assemblyPath))
             {
@@ -30,7 +47,16 @@ namespace ECMA335Printer
 
             try
             {
-                PrintAssemblyTree(assemblyPath, verbose);
+                if (statsFile != null)
+                {
+                    // Perform class-level trimming
+                    PerformClassLevelTrimming(assemblyPath, statsFile);
+                }
+                else
+                {
+                    // Normal print mode
+                    PrintAssemblyTree(assemblyPath, verbose);
+                }
             }
             catch (Exception ex)
             {
@@ -60,6 +86,39 @@ namespace ECMA335Printer
                     PrintDetailedMetadata(peFile);
                 }
             }
+        }
+
+        static void PerformClassLevelTrimming(string assemblyPath, string statsFile)
+        {
+            Console.WriteLine($"=== Class-Level Trimming ===");
+            Console.WriteLine($"Assembly: {assemblyPath}");
+            Console.WriteLine($"Stats file: {statsFile}");
+
+            // Parse the PE file
+            var peFile = new PEFile(assemblyPath);
+            peFile.Parse();
+
+            // Parse the stats file
+            var statsParser = new InvokeStatsParser(statsFile);
+            statsParser.Parse();
+
+            // Get assembly name from path
+            string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+            
+            // Get invoked methods for this assembly
+            var invokedMethods = statsParser.GetInvokedMethods(assemblyName);
+            Console.WriteLine($"Found {invokedMethods.Count} invoked methods in stats");
+
+            // Create trimmer and perform trimming
+            var trimmer = new PETrimmer(peFile, invokedMethods);
+            trimmer.TrimAtClassLevel();
+
+            // Save trimmed file
+            string outputPath = assemblyPath + ".s0";
+            trimmer.SaveTrimmedFile(outputPath);
+
+            Console.WriteLine($"\n=== Trimming Complete ===");
+            Console.WriteLine($"Output file: {outputPath}");
         }
 
         static void PrintDetailedMetadata(PEFile peFile)
