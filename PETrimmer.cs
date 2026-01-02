@@ -109,7 +109,7 @@ namespace ECMA335Printer
         /// </summary>
         public void TrimAtMethodLevel()
         {
-            Console.WriteLine("\n=== Starting Method-Level Trimming ===");
+            Console.WriteLine("\n=== Starting Method-Level Trimming (includes Class-Level) ===");
 
             if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
             {
@@ -117,15 +117,23 @@ namespace ECMA335Printer
                 return;
             }
 
+            int totalClassCount = _metadata.TypeDefTable.Length;
+            int trimmedClassCount = 0;
+            int remainingClassCount = 0;
             int trimmedMethodCount = 0;
             int remainingMethodCount = 0;
             int totalMethodCount = _metadata.MethodDefTable?.Length ?? 0;
             _totalBytesZeroed = 0; // Reset byte counter
 
+            long trimmedClassBytes = 0;
+            long trimmedMethodBytes = 0;
             long remainingBytes = 0;
 
-            // Single pass: Trim methods and count statistics
-            Console.WriteLine("\n=== Performing Method-Level Trimming ===");
+            // Two-phase trimming:
+            // Phase 1: Trim entire classes that have no invoked methods (Class-Level)
+            // Phase 2: For remaining classes, trim individual methods (Method-Level)
+            
+            Console.WriteLine("\n=== Phase 1: Class-Level Trimming ===");
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -137,7 +145,38 @@ namespace ECMA335Printer
                 // Get type name
                 string typeName = GetTypeName(typeDef);
                 
-                // Process each method in this type
+                // Check if this type should be trimmed at class level
+                if (ShouldTrimType(typeIndex))
+                {
+                    Console.WriteLine($"Trimming entire type: {typeName}");
+                    long beforeTrim = _totalBytesZeroed;
+                    WalkType(typeIndex, typeDef, ZeroBytes);
+                    trimmedClassBytes += (_totalBytesZeroed - beforeTrim);
+                    trimmedClassCount++;
+                }
+                else
+                {
+                    remainingClassCount++;
+                }
+            }
+
+            Console.WriteLine($"\n=== Phase 2: Method-Level Trimming (on remaining {remainingClassCount} types) ===");
+            for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+            {
+                var typeDef = _metadata.TypeDefTable[typeIndex];
+                
+                // Skip <Module> type (first type, index 0)
+                if (typeIndex == 0)
+                    continue;
+
+                // Skip types that were already trimmed at class level
+                if (ShouldTrimType(typeIndex))
+                    continue;
+
+                // Get type name
+                string typeName = GetTypeName(typeDef);
+                
+                // Process each method in this remaining type
                 uint methodStart = typeDef.MethodList;
                 uint methodEnd;
 
@@ -164,7 +203,9 @@ namespace ECMA335Printer
                     if (ShouldTrimMethod(methodFullName))
                     {
                         Console.WriteLine($"Trimming method: {methodFullName}");
+                        long beforeTrim = _totalBytesZeroed;
                         WalkMethod(methodIndex, ZeroBytes);
+                        trimmedMethodBytes += (_totalBytesZeroed - beforeTrim);
                         trimmedMethodCount++;
                     }
                     else
@@ -175,8 +216,7 @@ namespace ECMA335Printer
                     }
                 }
 
-                // For method-level trimming, we still need to count type-level data
-                // (TypeDef rows, Field data, etc.) as remaining bytes
+                // For remaining types, count type-level data (TypeDef rows, Field data, etc.)
                 WalkTypeNonMethodData(typeIndex, typeDef, (offset, length) => remainingBytes += length);
             }
 
@@ -188,21 +228,30 @@ namespace ECMA335Printer
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
-            Console.WriteLine($"Total methods: {totalMethodCount}");
+            Console.WriteLine($"Total types: {totalClassCount}");
+            Console.WriteLine($"Trimmed types (entire): {trimmedClassCount}");
+            Console.WriteLine($"Remaining types: {remainingClassCount}");
+            Console.WriteLine($"\nTotal methods: {totalMethodCount}");
             Console.WriteLine($"Trimmed methods: {trimmedMethodCount}");
             Console.WriteLine($"Remaining methods: {remainingMethodCount}");
             Console.WriteLine($"\nByte Statistics:");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
-            Console.WriteLine($"Trimmed bytes: {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (classes): {trimmedClassBytes:N0} ({(trimmedClassBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (methods): {trimmedMethodBytes:N0} ({(trimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (total): {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes: {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
             if (unaccountedBytes != 0)
             {
                 Console.WriteLine($"Unaccounted: {unaccountedBytes:N0} ({(unaccountedBytes * 100.0 / _fileData.Length):F2}%)");
             }
+            if (trimmedClassCount > 0)
+            {
+                Console.WriteLine($"\nAverage bytes per trimmed type: {trimmedClassBytes / trimmedClassCount:N0}");
+            }
             if (trimmedMethodCount > 0)
             {
-                Console.WriteLine($"\nAverage bytes per trimmed method: {trimmedBytes / trimmedMethodCount:N0}");
+                Console.WriteLine($"Average bytes per trimmed method: {trimmedMethodBytes / trimmedMethodCount:N0}");
             }
             if (remainingMethodCount > 0)
             {
