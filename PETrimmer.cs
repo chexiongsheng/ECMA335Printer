@@ -760,7 +760,12 @@ namespace ECMA335Printer
                                 uint dataSize = fatFormat ?
                                     BitConverter.ToUInt32(_fileData, (int)sectOffset) >> 8 :
                                     _fileData[sectOffset + 1];
-                                totalSize = sectOffset - offset + dataSize;
+                                
+                                // Calculate total size including alignment padding after exception table
+                                uint endOffset = sectOffset + dataSize;
+                                // Align to 4 bytes for next method
+                                endOffset = (endOffset + 3) & ~3u;
+                                totalSize = endOffset - offset;
                             }
                         }
                     }
