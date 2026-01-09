@@ -12,14 +12,17 @@ namespace ECMA335Printer
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file>] [-s1 <stats-file>]");
+                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file> [-d]] [-s1 <stats-file> [-d]]");
                 Console.WriteLine("  -v: Verbose mode, print detailed metadata information");
                 Console.WriteLine("  -s0 <stats-file>: Class-level trimming based on invoke statistics");
                 Console.WriteLine("  -s1 <stats-file>: Method-level trimming based on invoke statistics");
+                Console.WriteLine("  -d: Deep trimming - trim unused metadata after s0/s1 (must be used with -s0 or -s1)");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -v");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s1 invoke_stats.json");
+                Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json -d");
+                Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s1 invoke_stats.json -d");
                 return;
             }
 
@@ -27,6 +30,7 @@ namespace ECMA335Printer
             bool verbose = false;
             string? statsFile = null;
             int trimmingLevel = -1; // -1: no trimming, 0: class-level, 1: method-level
+            bool enableDeepTrimming = false; // Deep trimming (metadata trimming after s0/s1)
 
             // Parse arguments
             for (int i = 1; i < args.Length; i++)
@@ -47,11 +51,24 @@ namespace ECMA335Printer
                     trimmingLevel = 1;
                     i++; // Skip next argument
                 }
+                else if (args[i] == "-d")
+                {
+                    enableDeepTrimming = true;
+                }
             }
 
             if (!File.Exists(assemblyPath))
             {
                 Console.WriteLine($"Error: File not found: {assemblyPath}");
+                return;
+            }
+
+            // Validate parameters
+            if (enableDeepTrimming && trimmingLevel == -1)
+            {
+                Console.WriteLine("Error: -d parameter requires -s0 or -s1 to be specified");
+                Console.WriteLine("Usage: ECMA335Printer <assembly-path> -s0 <stats-file> -d");
+                Console.WriteLine("   or: ECMA335Printer <assembly-path> -s1 <stats-file> -d");
                 return;
             }
 
@@ -62,11 +79,11 @@ namespace ECMA335Printer
                     // Perform trimming based on level
                     if (trimmingLevel == 0)
                     {
-                        PerformClassLevelTrimming(assemblyPath, statsFile);
+                        PerformClassLevelTrimming(assemblyPath, statsFile, enableDeepTrimming);
                     }
                     else if (trimmingLevel == 1)
                     {
-                        PerformMethodLevelTrimming(assemblyPath, statsFile);
+                        PerformMethodLevelTrimming(assemblyPath, statsFile, enableDeepTrimming);
                     }
                 }
                 else
@@ -105,11 +122,15 @@ namespace ECMA335Printer
             }
         }
 
-        static void PerformClassLevelTrimming(string assemblyPath, string statsFile)
+        static void PerformClassLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false)
         {
             Console.WriteLine($"=== Class-Level Trimming ===");
             Console.WriteLine($"Assembly: {assemblyPath}");
             Console.WriteLine($"Stats file: {statsFile}");
+            if (enableDeepTrimming)
+            {
+                Console.WriteLine($"Deep trimming: Enabled");
+            }
 
             // Parse the PE file
             var peFile = new PEFile(assemblyPath);
@@ -130,19 +151,29 @@ namespace ECMA335Printer
             var trimmer = new PETrimmer(peFile, invokedMethods);
             trimmer.TrimAtClassLevel();
 
+            // Perform deep trimming if enabled
+            if (enableDeepTrimming)
+            {
+                trimmer.TrimAtDeepLevel();
+            }
+
             // Save trimmed file
-            string outputPath = assemblyPath + ".s0";
+            string outputPath = enableDeepTrimming ? assemblyPath + ".s0.d" : assemblyPath + ".s0";
             trimmer.SaveTrimmedFile(outputPath);
 
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Output file: {outputPath}");
         }
 
-        static void PerformMethodLevelTrimming(string assemblyPath, string statsFile)
+        static void PerformMethodLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false)
         {
             Console.WriteLine($"=== Method-Level Trimming ===");
             Console.WriteLine($"Assembly: {assemblyPath}");
             Console.WriteLine($"Stats file: {statsFile}");
+            if (enableDeepTrimming)
+            {
+                Console.WriteLine($"Deep trimming: Enabled");
+            }
 
             // Parse the PE file
             var peFile = new PEFile(assemblyPath);
@@ -163,13 +194,21 @@ namespace ECMA335Printer
             var trimmer = new PETrimmer(peFile, invokedMethods);
             trimmer.TrimAtMethodLevel();
 
+            // Perform deep trimming if enabled
+            if (enableDeepTrimming)
+            {
+                trimmer.TrimAtDeepLevel();
+            }
+
             // Save trimmed file
-            string outputPath = assemblyPath + ".s1";
+            string outputPath = enableDeepTrimming ? assemblyPath + ".s1.d" : assemblyPath + ".s1";
             trimmer.SaveTrimmedFile(outputPath);
 
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Output file: {outputPath}");
         }
+
+
 
         static void PrintDetailedMetadata(PEFile peFile)
         {

@@ -413,7 +413,7 @@ namespace ECMA335Printer
         /// <summary>
         /// 判断类型是否应该被剪裁
         /// </summary>
-        private bool ShouldTrimType(int typeIndex)
+        public bool ShouldTrimType(int typeIndex)
         {
             // Simply check if the type is in the invoked types set
             return !_invokedTypes.Contains(typeIndex);
@@ -422,7 +422,7 @@ namespace ECMA335Printer
         /// <summary>
         /// 判断方法是否应该被剪裁（方法级别剪裁）
         /// </summary>
-        private bool ShouldTrimMethod(string methodFullName)
+        public bool ShouldTrimMethod(string methodFullName)
         {
             // Normalize the method name from metadata format to stats format
             // .ctor -> _ctor, .cctor -> _cctor
@@ -1145,7 +1145,7 @@ namespace ECMA335Printer
             }
         }
 
-        private uint RVAToFileOffset(uint rva)
+        public uint RVAToFileOffset(uint rva)
         {
             foreach (var section in _sections)
             {
@@ -1157,7 +1157,7 @@ namespace ECMA335Printer
             return 0;
         }
 
-        private string GetTypeName(TypeDefRow typeDef)
+        public string GetTypeName(TypeDefRow typeDef)
         {
             string ns = ReadString(typeDef.TypeNamespace);
             string name = ReadString(typeDef.TypeName);
@@ -1170,7 +1170,7 @@ namespace ECMA335Printer
             return $"{typeName}.{methodName}";
         }
 
-        private string ReadString(uint offset)
+        public string ReadString(uint offset)
         {
             if (!_metadata.Streams.ContainsKey("#Strings") || offset == 0)
                 return "";
@@ -1577,5 +1577,1341 @@ namespace ECMA335Printer
             File.WriteAllBytes(outputPath, _fileData);
             Console.WriteLine("File saved successfully");
         }
+
+        #region S2 Trimming - IL Token Extractor
+
+        /// <summary>
+        /// IL Token 提取器 - 从方法体中提取所有 Token 引用
+        /// </summary>
+        private class ILTokenExtractor
+        {
+            private readonly byte[] _ilCode;
+            private readonly HashSet<uint> _extractedTokens;
+
+            // IL 操作码定义（包含 Token 的指令）
+            private static readonly HashSet<byte> _oneByteTokenOpcodes = new HashSet<byte>
+            {
+                0x28, // call
+                0x6F, // callvirt
+                0x73, // newobj
+                0x7B, // ldfld
+                0x7C, // ldflda
+                0x7D, // stfld
+                0x7E, // ldsfld
+                0x7F, // ldsflda
+                0x80, // stsfld
+                0xD0, // ldtoken
+                0x74, // castclass
+                0x75, // isinst
+                0x8C, // box
+                0x79, // unbox
+                0x8D, // newarr
+                0x8F, // ldelema
+                0xC2, // refanyval
+                0xC6, // mkrefany
+            };
+
+            private static readonly HashSet<ushort> _twoByteTokenOpcodes = new HashSet<ushort>
+            {
+                0xFE06, // ldftn
+                0xFE07, // ldvirtftn
+                0xFE09, // initobj
+                0xFE0C, // constrained.
+                0xFE15, // initblk
+                0xFE1C, // sizeof
+            };
+
+            public ILTokenExtractor(byte[] ilCode)
+            {
+                _ilCode = ilCode;
+                _extractedTokens = new HashSet<uint>();
+            }
+
+            /// <summary>
+            /// 提取 IL 代码中的所有 Token
+            /// </summary>
+            public HashSet<uint> ExtractTokens()
+            {
+                int pos = 0;
+                int lastPos = -1;
+                int stuckCount = 0;
+                
+                while (pos < _ilCode.Length)
+                {
+                    // 检测死循环
+                    if (pos == lastPos)
+                    {
+                        stuckCount++;
+                        if (stuckCount > 10)
+                        {
+                            // 强制前进，避免死循环
+                            pos++;
+                            stuckCount = 0;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        lastPos = pos;
+                        stuckCount = 0;
+                    }
+                    
+                    try
+                    {
+                        byte opcode = _ilCode[pos];
+                        int oldPos = pos;
+                        
+                        // 检查是否是双字节操作码
+                        if (opcode == 0xFE && pos + 1 < _ilCode.Length)
+                        {
+                            byte secondByte = _ilCode[pos + 1];
+                            ushort twoByteOpcode = (ushort)((opcode << 8) | secondByte);
+                            
+                            if (_twoByteTokenOpcodes.Contains(twoByteOpcode))
+                            {
+                                // 读取 Token（4 字节）
+                                if (pos + 6 <= _ilCode.Length)
+                                {
+                                    uint token = BitConverter.ToUInt32(_ilCode, pos + 2);
+                                    _extractedTokens.Add(token);
+                                    pos += 6; // 2 (opcode) + 4 (token)
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                // 其他双字节操作码
+                                int size = GetTwoByteOpcodeSize(twoByteOpcode);
+                                if (size <= 0) size = 2; // 安全默认值
+                                pos += size;
+                            }
+                        }
+                        else if (_oneByteTokenOpcodes.Contains(opcode))
+                        {
+                            // 读取 Token（4 字节）
+                            if (pos + 5 <= _ilCode.Length)
+                            {
+                                uint token = BitConverter.ToUInt32(_ilCode, pos + 1);
+                                _extractedTokens.Add(token);
+                                pos += 5; // 1 (opcode) + 4 (token)
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        else if (opcode == 0x29) // calli
+                        {
+                            // calli 使用 StandAloneSig token
+                            if (pos + 5 <= _ilCode.Length)
+                            {
+                                uint token = BitConverter.ToUInt32(_ilCode, pos + 1);
+                                _extractedTokens.Add(token);
+                                pos += 5;
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        else if (opcode == 0x21) // ldstr
+                        {
+                            // ldstr 使用 String token
+                            if (pos + 5 <= _ilCode.Length)
+                            {
+                                uint token = BitConverter.ToUInt32(_ilCode, pos + 1);
+                                _extractedTokens.Add(token);
+                                pos += 5;
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        else if (opcode == 0x45) // switch
+                        {
+                            // switch 指令：switch <uint32 N> <int32 target1> ... <int32 targetN>
+                            if (pos + 5 <= _ilCode.Length)
+                            {
+                                uint n = BitConverter.ToUInt32(_ilCode, pos + 1);
+                                // 限制 n 的大小，防止异常值
+                                if (n > 10000) n = 0;
+                                pos += 5 + (int)(n * 4); // 1 (opcode) + 4 (N) + N*4 (targets)
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            // 其他单字节操作码
+                            int size = GetOneByteOpcodeSize(opcode);
+                            if (size <= 0) size = 1; // 安全默认值
+                            pos += size;
+                        }
+                        
+                        // 确保位置有前进
+                        if (pos <= oldPos)
+                        {
+                            pos = oldPos + 1;
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // 遇到无效操作码，跳过
+                        pos++;
+                    }
+                }
+
+                return _extractedTokens;
+            }
+
+            /// <summary>
+            /// 获取单字节操作码的大小
+            /// </summary>
+            private int GetOneByteOpcodeSize(byte opcode)
+            {
+                // 根据 ECMA-335 规范返回操作码大小
+                switch (opcode)
+                {
+                    // 无操作数
+                    case 0x00: case 0x01: case 0x02: case 0x03: case 0x04: case 0x05: case 0x06: case 0x07:
+                    case 0x08: case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D: case 0x0E:
+                    case 0x14: case 0x15: case 0x16: case 0x17: case 0x18: case 0x19: case 0x1A: case 0x1B:
+                    case 0x1C: case 0x1D: case 0x1E:
+                    case 0x25: case 0x26: case 0x27: case 0x2A:
+                    case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A:
+                    case 0x4B: case 0x4C: case 0x4D: case 0x4E: case 0x4F: case 0x50: case 0x51: case 0x52:
+                    case 0x53: case 0x54: case 0x55: case 0x56: case 0x57: case 0x58: case 0x59: case 0x5A:
+                    case 0x5B: case 0x5C: case 0x5D: case 0x5E: case 0x5F: case 0x60: case 0x61: case 0x62:
+                    case 0x63: case 0x64: case 0x65: case 0x66: case 0x67: case 0x68: case 0x69: case 0x6A:
+                    case 0x6B: case 0x6C: case 0x6D: case 0x6E: case 0x76: case 0x77: case 0x78: case 0x7A:
+                    case 0x81: case 0x82: case 0x83: case 0x84: case 0x85: case 0x86: case 0x87: case 0x88:
+                    case 0x89: case 0x8A: case 0x8B: case 0x8E: case 0x90: case 0x91: case 0x92: case 0x93:
+                    case 0x94: case 0x95: case 0x96: case 0x97: case 0x98: case 0x99: case 0x9A: case 0x9B:
+                    case 0x9C: case 0x9D: case 0x9E: case 0x9F: case 0xA0: case 0xA1: case 0xA2: case 0xA3:
+                    case 0xA4: case 0xA5: case 0xB3: case 0xC3: case 0xC4: case 0xC5: case 0xD1: case 0xD2:
+                    case 0xD3: case 0xDC:
+                        return 1;
+
+                    // 1 字节操作数
+                    case 0x0F: case 0x10: case 0x11: case 0x12: case 0x13: // ldarg, ldarga, starg, ldloc, ldloca
+                    case 0x1F: case 0x20: // ldc.i4.s
+                        return 2;
+
+                    // 2 字节操作数（短分支指令）
+                    case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F: case 0x30: case 0x31: case 0x32: // br.s, brfalse.s, brtrue.s, beq.s, bge.s, bgt.s, ble.s, blt.s
+                    case 0x33: case 0x34: case 0x35: case 0x36: case 0x37: // bne.un.s, bge.un.s, bgt.un.s, ble.un.s, blt.un.s
+                    case 0xDE: // leave.s
+                        return 2;
+
+                    // 5 字节操作数（4字节操作数的指令）
+                    case 0x21: // ldstr (string token)
+                    case 0x22: // ldc.i4
+                    case 0x23: // ldc.r4
+                    case 0x28: // call (method token) - 已在 ExtractTokens 中处理
+                    case 0x29: // calli (signature token) - 已在 ExtractTokens 中处理
+                    case 0x38: case 0x39: case 0x3A: case 0x3B: case 0x3C: case 0x3D: case 0x3E: case 0x3F: // br, beq, bge, bgt, ble, blt, bne.un, bge.un
+                    case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: // bgt.un, ble.un, blt.un, brfalse, brtrue
+                    case 0x6F: // callvirt (method token) - 已在 ExtractTokens 中处理
+                    case 0x73: // newobj (method token) - 已在 ExtractTokens 中处理
+                    case 0x74: // castclass (type token) - 已在 ExtractTokens 中处理
+                    case 0x75: // isinst (type token) - 已在 ExtractTokens 中处理
+                    case 0x79: // unbox (type token) - 已在 ExtractTokens 中处理
+                    case 0x7B: // ldfld (field token) - 已在 ExtractTokens 中处理
+                    case 0x7C: // ldflda (field token) - 已在 ExtractTokens 中处理
+                    case 0x7D: // stfld (field token) - 已在 ExtractTokens 中处理
+                    case 0x7E: // ldsfld (field token) - 已在 ExtractTokens 中处理
+                    case 0x7F: // ldsflda (field token) - 已在 ExtractTokens 中处理
+                    case 0x80: // stsfld (field token) - 已在 ExtractTokens 中处理
+                    case 0x8C: // box (type token) - 已在 ExtractTokens 中处理
+                    case 0x8D: // newarr (type token) - 已在 ExtractTokens 中处理
+                    case 0x8F: // ldelema (type token) - 已在 ExtractTokens 中处理
+                    case 0xC2: // refanyval (type token) - 已在 ExtractTokens 中处理
+                    case 0xC6: // mkrefany (type token) - 已在 ExtractTokens 中处理
+                    case 0xD0: // ldtoken (token) - 已在 ExtractTokens 中处理
+                    case 0xDD: // leave
+                        return 5;
+
+                    // 9 字节操作数（8字节操作数的指令）
+                    case 0x24: // ldc.r8
+                        return 9;
+
+                    // 默认：1 字节（保守估计）
+                    default:
+                        return 1;
+                }
+            }
+
+            /// <summary>
+            /// 获取双字节操作码的大小
+            /// </summary>
+            private int GetTwoByteOpcodeSize(ushort opcode)
+            {
+                // 大多数双字节操作码都有 4 字节操作数或无操作数
+                switch (opcode)
+                {
+                    case 0xFE00: case 0xFE01: case 0xFE02: case 0xFE03: case 0xFE04: case 0xFE05:
+                    case 0xFE08: case 0xFE0A: case 0xFE0B: case 0xFE0D: case 0xFE0E: case 0xFE0F:
+                    case 0xFE10: case 0xFE11: case 0xFE12: case 0xFE13: case 0xFE14: case 0xFE16:
+                    case 0xFE17: case 0xFE18: case 0xFE19: case 0xFE1A: case 0xFE1B: case 0xFE1D:
+                    case 0xFE1E:
+                        return 2; // 无操作数
+
+                    default:
+                        return 6; // 2 (opcode) + 4 (operand)
+                }
+            }
+        }
+
+        #endregion
+
+        #region S2 Trimming - Metadata Reference Analyzer
+
+        /// <summary>
+        /// 元数据引用关系分析器 - 构建引用关系图并标记使用中的元数据
+        /// </summary>
+        private class MetadataReferenceAnalyzer
+        {
+            private readonly MetadataRoot _metadata;
+            private readonly byte[] _fileData;
+            private readonly HashSet<uint> _usedTokens;
+            private readonly PETrimmer _trimmer;
+
+            public MetadataReferenceAnalyzer(MetadataRoot metadata, byte[] fileData, PETrimmer trimmer)
+            {
+                _metadata = metadata;
+                _fileData = fileData;
+                _usedTokens = new HashSet<uint>();
+                _trimmer = trimmer;
+            }
+
+            /// <summary>
+            /// 构建引用关系图并标记所有使用中的元数据
+            /// </summary>
+            public HashSet<uint> BuildReferenceGraph()
+            {
+                Console.WriteLine("Building metadata reference graph...");
+
+                // 1. 扫描保留的 TypeDef 表
+                Console.Write("  Scanning TypeDef table...");
+                ScanPreservedTypeDefs();
+                Console.WriteLine($" {_usedTokens.Count} tokens");
+
+                // 2. 扫描保留的 MethodDef 表
+                Console.Write("  Scanning MethodDef table...");
+                int beforeMethods = _usedTokens.Count;
+                ScanPreservedMethodDefs();
+                Console.WriteLine($" +{_usedTokens.Count - beforeMethods} tokens");
+
+                // 3. 扫描保留的 Field 表
+                Console.Write("  Scanning Field table...");
+                int beforeFields = _usedTokens.Count;
+                ScanPreservedFields();
+                Console.WriteLine($" +{_usedTokens.Count - beforeFields} tokens");
+
+                // 4. 递归标记所有被引用的元数据
+                Console.Write("  Marking referenced metadata...");
+                MarkReferencedMetadata();
+                Console.WriteLine(" done");
+
+                // 5. 扫描 CustomAttribute 表（在所有引用标记完成后）
+                Console.Write("  Scanning CustomAttribute table...");
+                int beforeAttrs = _usedTokens.Count;
+                ScanCustomAttributes();
+                Console.WriteLine($" +{_usedTokens.Count - beforeAttrs} tokens");
+
+                Console.WriteLine($"Found {_usedTokens.Count} used metadata tokens");
+                return _usedTokens;
+            }
+
+            private void ScanPreservedTypeDefs()
+            {
+                if (_metadata.TypeDefTable == null) return;
+
+                for (int i = 0; i < _metadata.TypeDefTable.Length; i++)
+                {
+                    // 跳过被剪裁的类型
+                    if (i > 0 && _trimmer.ShouldTrimType(i))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[i];
+                    uint token = (uint)(0x02000000 | (i + 1)); // TypeDef token
+                    _usedTokens.Add(token);
+
+                    // 标记 Extends (基类)
+                    if (typeDef.Extends != 0)
+                    {
+                        _usedTokens.Add(DecodeTypeDefOrRef(typeDef.Extends));
+                    }
+
+                    // 标记 InterfaceImpl
+                    if (_metadata.InterfaceImplTable != null)
+                    {
+                        foreach (var impl in _metadata.InterfaceImplTable)
+                        {
+                            if (impl.Class == i + 1)
+                            {
+                                _usedTokens.Add(DecodeTypeDefOrRef(impl.Interface));
+                            }
+                        }
+                    }
+                }
+            }
+
+            private void ScanPreservedMethodDefs()
+            {
+                if (_metadata.MethodDefTable == null || _metadata.TypeDefTable == null) return;
+
+                int processedMethods = 0;
+                int totalMethods = 0;
+                
+                // 先计算总数
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    if (typeIndex > 0 && _trimmer.ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = _trimmer.ReadString(method.Name);
+                        string typeName = _trimmer.GetTypeName(typeDef);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        if (!_trimmer.ShouldTrimMethod(methodFullName))
+                            totalMethods++;
+                    }
+                }
+
+                Console.Write($" (0/{totalMethods})");
+
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    // 跳过被剪裁的类型
+                    if (typeIndex > 0 && _trimmer.ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    string typeName = _trimmer.GetTypeName(typeDef);
+
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = _trimmer.ReadString(method.Name);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        // 跳过被剪裁的方法
+                        if (_trimmer.ShouldTrimMethod(methodFullName))
+                            continue;
+
+                        uint token = (uint)(0x06000000 | methodIdx); // MethodDef token
+                        _usedTokens.Add(token);
+
+                        // 标记方法签名
+                        if (method.Signature != 0)
+                        {
+                            MarkBlobSignature(method.Signature);
+                        }
+
+                        // 解析方法体中的 Token
+                        if (method.RVA != 0)
+                        {
+                            ExtractTokensFromMethodBody(method.RVA);
+                        }
+
+                        processedMethods++;
+                        if (processedMethods % 500 == 0)
+                        {
+                            Console.Write($"\r  Scanning MethodDef table... ({processedMethods}/{totalMethods})");
+                        }
+                    }
+                }
+            }
+
+            private void ScanPreservedFields()
+            {
+                if (_metadata.FieldTable == null || _metadata.TypeDefTable == null) return;
+
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    // 跳过被剪裁的类型
+                    if (typeIndex > 0 && _trimmer.ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+
+                    uint fieldStart = typeDef.FieldList;
+                    uint fieldEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].FieldList
+                        : (uint)_metadata.FieldTable.Length + 1;
+
+                    for (uint fieldIdx = fieldStart; fieldIdx < fieldEnd; fieldIdx++)
+                    {
+                        if (fieldIdx == 0 || fieldIdx > _metadata.FieldTable.Length)
+                            continue;
+
+                        int fieldIndex = (int)fieldIdx - 1;
+                        var field = _metadata.FieldTable[fieldIndex];
+
+                        uint token = (uint)(0x04000000 | fieldIdx); // Field token
+                        _usedTokens.Add(token);
+
+                        // 标记字段签名
+                        if (field.Signature != 0)
+                        {
+                            MarkBlobSignature(field.Signature);
+                        }
+
+                        // 标记 Constant
+                        if (_metadata.ConstantTable != null)
+                        {
+                            foreach (var constant in _metadata.ConstantTable)
+                            {
+                                uint parentToken = DecodeHasConstant(constant.Parent);
+                                if (parentToken == token)
+                                {
+                                    // 标记常量值
+                                    if (constant.Value != 0)
+                                    {
+                                        MarkBlobData(constant.Value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            private void ScanCustomAttributes()
+            {
+                if (_metadata.CustomAttributeTable == null) return;
+
+                foreach (var attr in _metadata.CustomAttributeTable)
+                {
+                    uint parentToken = DecodeHasCustomAttribute(attr.Parent);
+                    
+                    // 检查父元素是否被保留
+                    if (_usedTokens.Contains(parentToken))
+                    {
+                        // 标记 CustomAttribute 的 Type (构造函数)
+                        uint typeToken = DecodeCustomAttributeType(attr.Type);
+                        _usedTokens.Add(typeToken);
+
+                        // 标记 CustomAttribute 的 Value
+                        if (attr.Value != 0)
+                        {
+                            MarkBlobData(attr.Value);
+                        }
+                    }
+                }
+            }
+
+            private void MarkReferencedMetadata()
+            {
+                // 递归标记所有被引用的元数据
+                bool changed = true;
+                int iterations = 0;
+                
+                while (changed && iterations < 100) // 防止无限循环
+                {
+                    changed = false;
+                    int beforeCount = _usedTokens.Count;
+
+                    // 处理 MemberRef
+                    if (_metadata.MemberRefTable != null)
+                    {
+                        for (int i = 0; i < _metadata.MemberRefTable.Length; i++)
+                        {
+                            uint token = (uint)(0x0A000000 | (i + 1));
+                            if (_usedTokens.Contains(token))
+                            {
+                                var memberRef = _metadata.MemberRefTable[i];
+                                
+                                // 标记 Class
+                                uint classToken = DecodeMemberRefParent(memberRef.Class);
+                                if (classToken != 0)
+                                    _usedTokens.Add(classToken);
+
+                                // 标记 Signature
+                                if (memberRef.Signature != 0)
+                                {
+                                    MarkBlobSignature(memberRef.Signature);
+                                }
+                            }
+                        }
+                    }
+
+                    // 处理 TypeSpec
+                    if (_metadata.TypeSpecTable != null)
+                    {
+                        for (int i = 0; i < _metadata.TypeSpecTable.Length; i++)
+                        {
+                            uint token = (uint)(0x1B000000 | (i + 1));
+                            if (_usedTokens.Contains(token))
+                            {
+                                var typeSpec = _metadata.TypeSpecTable[i];
+                                
+                                // 标记 Signature
+                                if (typeSpec.Signature != 0)
+                                {
+                                    MarkBlobSignature(typeSpec.Signature);
+                                }
+                            }
+                        }
+                    }
+
+                    // 处理 MethodSpec
+                    if (_metadata.MethodSpecTable != null)
+                    {
+                        for (int i = 0; i < _metadata.MethodSpecTable.Length; i++)
+                        {
+                            uint token = (uint)(0x2B000000 | (i + 1));
+                            if (_usedTokens.Contains(token))
+                            {
+                                var methodSpec = _metadata.MethodSpecTable[i];
+                                
+                                // 标记 Method
+                                uint methodToken = DecodeMethodDefOrRef(methodSpec.Method);
+                                if (methodToken != 0)
+                                    _usedTokens.Add(methodToken);
+
+                                // 标记 Instantiation
+                                if (methodSpec.Instantiation != 0)
+                                {
+                                    MarkBlobSignature(methodSpec.Instantiation);
+                                }
+                            }
+                        }
+                    }
+
+                    int addedCount = _usedTokens.Count - beforeCount;
+                    if (addedCount > 0)
+                    {
+                        changed = true;
+                        Console.Write($".");
+                    }
+
+                    iterations++;
+                }
+
+                if (iterations > 0)
+                    Console.WriteLine($" ({iterations} iterations)");
+            }
+
+            private void ExtractTokensFromMethodBody(uint rva)
+            {
+                try
+                {
+                    uint offset = _trimmer.RVAToFileOffset(rva);
+                    if (offset == 0 || offset >= _fileData.Length)
+                        return;
+
+                    byte firstByte = _fileData[offset];
+                    byte[] ilCode;
+
+                    // 检查方法体格式
+                    if ((firstByte & 0x03) == 0x02) // Tiny format
+                    {
+                        uint codeSize = (uint)(firstByte >> 2);
+                        ilCode = new byte[codeSize];
+                        Array.Copy(_fileData, offset + 1, ilCode, 0, codeSize);
+                    }
+                    else if ((firstByte & 0x03) == 0x03) // Fat format
+                    {
+                        uint codeSize = BitConverter.ToUInt32(_fileData, (int)offset + 4);
+                        ilCode = new byte[codeSize];
+                        Array.Copy(_fileData, offset + 12, ilCode, 0, codeSize);
+
+                        // 处理 LocalVarSigTok
+                        ushort flags = BitConverter.ToUInt16(_fileData, (int)offset);
+                        if ((flags & 0x10) != 0) // InitLocals flag
+                        {
+                            uint localVarSigTok = BitConverter.ToUInt32(_fileData, (int)offset + 8);
+                            if (localVarSigTok != 0)
+                            {
+                                _usedTokens.Add(localVarSigTok);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        return;
+                    }
+
+                    // 提取 IL 代码中的 Token
+                    var extractor = new ILTokenExtractor(ilCode);
+                    var tokens = extractor.ExtractTokens();
+                    
+                    foreach (var token in tokens)
+                    {
+                        _usedTokens.Add(token);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to extract tokens from method body at RVA 0x{rva:X}: {ex.Message}");
+                }
+            }
+
+            private void MarkBlobSignature(uint blobOffset)
+            {
+                // 简化处理：标记 Blob 偏移
+                // 实际应该解析签名并提取其中的类型引用
+                MarkBlobData(blobOffset);
+            }
+
+            private void MarkBlobData(uint blobOffset)
+            {
+                // 标记 Blob 数据（通过特殊的伪 Token）
+                // 使用高位标记：0x70000000 | blobOffset
+                _usedTokens.Add(0x70000000 | blobOffset);
+            }
+
+            // Coded Index 解码方法
+            private uint DecodeTypeDefOrRef(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x03);
+                int index = (int)(codedIndex >> 2);
+                
+                switch (tag)
+                {
+                    case 0: return (uint)(0x02000000 | index); // TypeDef
+                    case 1: return (uint)(0x01000000 | index); // TypeRef
+                    case 2: return (uint)(0x1B000000 | index); // TypeSpec
+                    default: return 0;
+                }
+            }
+
+            private uint DecodeMemberRefParent(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x07);
+                int index = (int)(codedIndex >> 3);
+                
+                switch (tag)
+                {
+                    case 0: return (uint)(0x02000000 | index); // TypeDef
+                    case 1: return (uint)(0x01000000 | index); // TypeRef
+                    case 2: return (uint)(0x1A000000 | index); // ModuleRef
+                    case 3: return (uint)(0x06000000 | index); // MethodDef
+                    case 4: return (uint)(0x1B000000 | index); // TypeSpec
+                    default: return 0;
+                }
+            }
+
+            private uint DecodeMethodDefOrRef(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x01);
+                int index = (int)(codedIndex >> 1);
+                
+                switch (tag)
+                {
+                    case 0: return (uint)(0x06000000 | index); // MethodDef
+                    case 1: return (uint)(0x0A000000 | index); // MemberRef
+                    default: return 0;
+                }
+            }
+
+            private uint DecodeHasConstant(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x03);
+                int index = (int)(codedIndex >> 2);
+                
+                switch (tag)
+                {
+                    case 0: return (uint)(0x04000000 | index); // Field
+                    case 1: return (uint)(0x08000000 | index); // Param
+                    case 2: return (uint)(0x17000000 | index); // Property
+                    default: return 0;
+                }
+            }
+
+            private uint DecodeHasCustomAttribute(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x1F);
+                int index = (int)(codedIndex >> 5);
+                
+                // 简化处理，只处理常见的表
+                switch (tag)
+                {
+                    case 0: return (uint)(0x06000000 | index); // MethodDef
+                    case 1: return (uint)(0x04000000 | index); // Field
+                    case 2: return (uint)(0x01000000 | index); // TypeRef
+                    case 3: return (uint)(0x02000000 | index); // TypeDef
+                    case 4: return (uint)(0x08000000 | index); // Param
+                    case 6: return (uint)(0x0A000000 | index); // MemberRef
+                    case 9: return (uint)(0x17000000 | index); // Property
+                    case 10: return (uint)(0x14000000 | index); // Event
+                    case 13: return (uint)(0x20000000 | index); // Assembly
+                    default: return 0;
+                }
+            }
+
+            private uint DecodeCustomAttributeType(uint codedIndex)
+            {
+                int tag = (int)(codedIndex & 0x07);
+                int index = (int)(codedIndex >> 3);
+                
+                switch (tag)
+                {
+                    case 2: return (uint)(0x06000000 | index); // MethodDef
+                    case 3: return (uint)(0x0A000000 | index); // MemberRef
+                    default: return 0;
+                }
+            }
+        }
+
+        #endregion
+
+        #region Deep Trimming - Public Methods
+
+        // Deep 剪裁统计变量
+        private long _deepTrimmedBytes;
+        private Dictionary<string, (int total, int trimmed, long trimmedBytes)> _deepTableStats = new Dictionary<string, (int, int, long)>();
+        private long _deepTrimmedBlobBytes;
+        private long _deepTrimmedUSBytes;
+
+        /// <summary>
+        /// 执行 Deep 级别元数据剪裁（必须在 S0/S1 剪裁后执行）
+        /// </summary>
+        public void TrimAtDeepLevel()
+        {
+            Console.WriteLine("\n=== Starting Deep-Level Metadata Trimming ===");
+            Console.WriteLine("Note: Deep trimming must be performed after S0/S1 trimming");
+
+            _deepTrimmedBytes = 0;
+            _deepTableStats.Clear();
+
+            // 1. 构建引用关系图
+            var analyzer = new MetadataReferenceAnalyzer(_metadata, _fileData, this);
+            var usedTokens = analyzer.BuildReferenceGraph();
+
+            // 2. 剪裁未使用的元数据表行
+            TrimUnusedMetadataTables(usedTokens);
+
+            // 3. 剪裁未使用的 Blob 堆数据
+            TrimUnusedBlobData(usedTokens);
+
+            // 4. 剪裁未使用的 #US 堆数据
+            TrimUnusedUserStrings(usedTokens);
+
+            // 5. 输出统计信息
+            PrintDeepStatistics();
+
+            Console.WriteLine("\n=== Deep Trimming Complete ===");
+        }
+
+        /// <summary>
+        /// 剪裁未使用的元数据表行
+        /// </summary>
+        private void TrimUnusedMetadataTables(HashSet<uint> usedTokens)
+        {
+            Console.WriteLine("\n=== Trimming Unused Metadata Tables ===");
+
+            // 剪裁 TypeRef 表
+            TrimTable("TypeRef", 0x01, _metadata.TypeRefTable?.Length ?? 0, usedTokens, 
+                i => 6 + _metadata.StringIndexSize * 2); // ResolutionScope + TypeName + TypeNamespace
+
+            // 剪裁 MemberRef 表
+            TrimTable("MemberRef", 0x0A, _metadata.MemberRefTable?.Length ?? 0, usedTokens,
+                i => GetCodedIndexSize(new[] { 0x02, 0x01, 0x1A, 0x06, 0x1B }) + _metadata.StringIndexSize + _metadata.BlobIndexSize);
+
+            // 剪裁 Constant 表
+            if (_metadata.ConstantTable != null)
+            {
+                int trimmedCount = 0;
+                long trimmedBytes = 0;
+                
+                for (int i = 0; i < _metadata.ConstantTable.Length; i++)
+                {
+                    var constant = _metadata.ConstantTable[i];
+                    uint parentToken = DecodeHasConstant(constant.Parent);
+                    
+                    if (!usedTokens.Contains(parentToken))
+                    {
+                        uint rowOffset = GetTableRowOffset(0x0B, i);
+                        if (rowOffset > 0)
+                        {
+                            int rowSize = 2 + GetCodedIndexSize(new[] { 0x04, 0x08, 0x17 }) + _metadata.BlobIndexSize;
+                            ZeroBytes(rowOffset, (uint)rowSize);
+                            trimmedCount++;
+                            trimmedBytes += rowSize;
+                        }
+                    }
+                }
+                
+                _deepTableStats["Constant"] = (_metadata.ConstantTable.Length, trimmedCount, trimmedBytes);
+                Console.WriteLine($"Constant: {trimmedCount}/{_metadata.ConstantTable.Length} rows trimmed ({trimmedBytes} bytes)");
+            }
+
+            // 剪裁 CustomAttribute 表
+            if (_metadata.CustomAttributeTable != null)
+            {
+                int trimmedCount = 0;
+                long trimmedBytes = 0;
+                
+                for (int i = 0; i < _metadata.CustomAttributeTable.Length; i++)
+                {
+                    var attr = _metadata.CustomAttributeTable[i];
+                    uint parentToken = DecodeHasCustomAttribute(attr.Parent);
+                    
+                    if (!usedTokens.Contains(parentToken))
+                    {
+                        uint rowOffset = GetTableRowOffset(0x0C, i);
+                        if (rowOffset > 0)
+                        {
+                            int rowSize = GetCodedIndexSize(new[] { 0x06, 0x04, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x00, 0x14, 0x17, 0x20, 0x23, 0x26, 0x27, 0x28 }) +
+                                         GetCodedIndexSize(new[] { 0x06, 0x0A }) + _metadata.BlobIndexSize;
+                            ZeroBytes(rowOffset, (uint)rowSize);
+                            trimmedCount++;
+                            trimmedBytes += rowSize;
+                        }
+                    }
+                }
+                
+                _deepTableStats["CustomAttribute"] = (_metadata.CustomAttributeTable.Length, trimmedCount, trimmedBytes);
+                Console.WriteLine($"CustomAttribute: {trimmedCount}/{_metadata.CustomAttributeTable.Length} rows trimmed ({trimmedBytes} bytes)");
+            }
+
+            // 剪裁 StandAloneSig 表
+            TrimTable("StandAloneSig", 0x11, _metadata.StandAloneSigTable?.Length ?? 0, usedTokens,
+                i => _metadata.BlobIndexSize);
+
+            // 剪裁 TypeSpec 表
+            TrimTable("TypeSpec", 0x1B, _metadata.TypeSpecTable?.Length ?? 0, usedTokens,
+                i => _metadata.BlobIndexSize);
+
+            // 剪裁 MethodSpec 表
+            TrimTable("MethodSpec", 0x2B, _metadata.MethodSpecTable?.Length ?? 0, usedTokens,
+                i => GetCodedIndexSize(new[] { 0x06, 0x0A }) + _metadata.BlobIndexSize);
+
+            // 剪裁 InterfaceImpl 表
+            if (_metadata.InterfaceImplTable != null)
+            {
+                int trimmedCount = 0;
+                long trimmedBytes = 0;
+                
+                for (int i = 0; i < _metadata.InterfaceImplTable.Length; i++)
+                {
+                    var impl = _metadata.InterfaceImplTable[i];
+                    uint classToken = (uint)(0x02000000 | impl.Class);
+                    
+                    if (!usedTokens.Contains(classToken))
+                    {
+                        uint rowOffset = GetTableRowOffset(0x09, i);
+                        if (rowOffset > 0)
+                        {
+                            int rowSize = GetTableIndexSize(0x02) + GetCodedIndexSize(new[] { 0x02, 0x01, 0x1B });
+                            ZeroBytes(rowOffset, (uint)rowSize);
+                            trimmedCount++;
+                            trimmedBytes += rowSize;
+                        }
+                    }
+                }
+                
+                _deepTableStats["InterfaceImpl"] = (_metadata.InterfaceImplTable.Length, trimmedCount, trimmedBytes);
+                Console.WriteLine($"InterfaceImpl: {trimmedCount}/{_metadata.InterfaceImplTable.Length} rows trimmed ({trimmedBytes} bytes)");
+            }
+
+            // 计算总剪裁字节数
+            foreach (var stat in _deepTableStats.Values)
+            {
+                _deepTrimmedBytes += stat.trimmedBytes;
+            }
+        }
+
+        /// <summary>
+        /// 剪裁单个表的辅助方法
+        /// </summary>
+        private void TrimTable(string tableName, int tableId, int rowCount, HashSet<uint> usedTokens, Func<int, int> getRowSize)
+        {
+            if (rowCount == 0) return;
+
+            int trimmedCount = 0;
+            long trimmedBytes = 0;
+
+            for (int i = 0; i < rowCount; i++)
+            {
+                uint token = (uint)((tableId << 24) | (i + 1));
+                
+                if (!usedTokens.Contains(token))
+                {
+                    uint rowOffset = GetTableRowOffset(tableId, i);
+                    if (rowOffset > 0)
+                    {
+                        int rowSize = getRowSize(i);
+                        ZeroBytes(rowOffset, (uint)rowSize);
+                        trimmedCount++;
+                        trimmedBytes += rowSize;
+                    }
+                }
+            }
+
+            _deepTableStats[tableName] = (rowCount, trimmedCount, trimmedBytes);
+            Console.WriteLine($"{tableName}: {trimmedCount}/{rowCount} rows trimmed ({trimmedBytes} bytes)");
+        }
+
+        /// <summary>
+        /// 剪裁未使用的 Blob 堆数据
+        /// </summary>
+        private void TrimUnusedBlobData(HashSet<uint> usedTokens)
+        {
+            Console.WriteLine("\n=== Trimming Unused Blob Heap Data ===");
+
+            if (!_metadata.Streams.ContainsKey("#Blob"))
+            {
+                Console.WriteLine("No #Blob heap found");
+                return;
+            }
+
+            var blobStream = _metadata.Streams["#Blob"];
+            long originalSize = blobStream.Data.Length;
+            _deepTrimmedBlobBytes = 0;
+
+            // 收集使用中的 Blob 偏移
+            HashSet<uint> usedBlobOffsets = new HashSet<uint>();
+            usedBlobOffsets.Add(0); // 总是保留偏移 0
+
+            foreach (var token in usedTokens)
+            {
+                if ((token & 0x70000000) == 0x70000000)
+                {
+                    // 这是一个 Blob 偏移标记
+                    uint blobOffset = token & 0x0FFFFFFF;
+                    usedBlobOffsets.Add(blobOffset);
+                }
+            }
+
+            Console.WriteLine($"Found {usedBlobOffsets.Count} used blob offsets");
+
+            // 遍历 Blob 堆并清零未使用的数据
+            uint offset = 1; // 跳过初始的 0 字节
+            int trimmedCount = 0;
+            
+            while (offset < blobStream.Data.Length)
+            {
+                uint blobStart = offset;
+                
+                // 读取压缩长度
+                int length;
+                int headerSize;
+                
+                if ((blobStream.Data[offset] & 0x80) == 0)
+                {
+                    length = blobStream.Data[offset];
+                    headerSize = 1;
+                }
+                else if ((blobStream.Data[offset] & 0xC0) == 0x80)
+                {
+                    if (offset + 1 >= blobStream.Data.Length) break;
+                    length = ((blobStream.Data[offset] & 0x3F) << 8) | blobStream.Data[offset + 1];
+                    headerSize = 2;
+                }
+                else if ((blobStream.Data[offset] & 0xE0) == 0xC0)
+                {
+                    if (offset + 3 >= blobStream.Data.Length) break;
+                    length = ((blobStream.Data[offset] & 0x1F) << 24) | (blobStream.Data[offset + 1] << 16) |
+                             (blobStream.Data[offset + 2] << 8) | blobStream.Data[offset + 3];
+                    headerSize = 4;
+                }
+                else
+                {
+                    offset++;
+                    continue;
+                }
+
+                // 检查是否使用
+                if (!usedBlobOffsets.Contains(blobStart))
+                {
+                    // 清零数据内容（保留长度前缀）
+                    uint fileOffset = blobStream.Offset + blobStart + (uint)headerSize;
+                    ZeroBytes(fileOffset, (uint)length);
+                    _deepTrimmedBlobBytes += length;
+                    trimmedCount++;
+                }
+
+                offset = blobStart + (uint)headerSize + (uint)length;
+            }
+
+            Console.WriteLine($"Trimmed {trimmedCount} blob entries ({_deepTrimmedBlobBytes} bytes)");
+            _deepTrimmedBytes += _deepTrimmedBlobBytes;
+        }
+
+        /// <summary>
+        /// 剪裁未使用的 #US 堆数据
+        /// </summary>
+        private void TrimUnusedUserStrings(HashSet<uint> usedTokens)
+        {
+            Console.WriteLine("\n=== Trimming Unused #US Heap Data ===");
+
+            if (!_metadata.Streams.ContainsKey("#US"))
+            {
+                Console.WriteLine("No #US heap found");
+                return;
+            }
+
+            var usStream = _metadata.Streams["#US"];
+            long originalSize = usStream.Data.Length;
+            _deepTrimmedUSBytes = 0;
+
+            // 收集使用中的 #US 偏移（从保留的方法体中提取 ldstr 指令）
+            HashSet<uint> usedUSOffsets = new HashSet<uint>();
+            usedUSOffsets.Add(0); // 总是保留偏移 0
+
+            // 扫描所有保留的方法体
+            if (_metadata.MethodDefTable != null && _metadata.TypeDefTable != null)
+            {
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                {
+                    if (typeIndex > 0 && ShouldTrimType(typeIndex))
+                        continue;
+
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    string typeName = GetTypeName(typeDef);
+
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = ReadString(method.Name);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        if (ShouldTrimMethod(methodFullName))
+                            continue;
+
+                        // 提取 ldstr 指令的 #US 引用
+                        if (method.RVA != 0)
+                        {
+                            ExtractUserStringReferences(method.RVA, usedUSOffsets);
+                        }
+                    }
+                }
+            }
+
+            Console.WriteLine($"Found {usedUSOffsets.Count} used user string offsets");
+
+            // 遍历 #US 堆并清零未使用的字符串
+            uint offset = 1; // 跳过初始的 0 字节
+            int trimmedCount = 0;
+            
+            while (offset < usStream.Data.Length)
+            {
+                uint stringStart = offset;
+                
+                // 读取压缩长度
+                int length;
+                int headerSize;
+                
+                if ((usStream.Data[offset] & 0x80) == 0)
+                {
+                    length = usStream.Data[offset];
+                    headerSize = 1;
+                }
+                else if ((usStream.Data[offset] & 0xC0) == 0x80)
+                {
+                    if (offset + 1 >= usStream.Data.Length) break;
+                    length = ((usStream.Data[offset] & 0x3F) << 8) | usStream.Data[offset + 1];
+                    headerSize = 2;
+                }
+                else if ((usStream.Data[offset] & 0xE0) == 0xC0)
+                {
+                    if (offset + 3 >= usStream.Data.Length) break;
+                    length = ((usStream.Data[offset] & 0x1F) << 24) | (usStream.Data[offset + 1] << 16) |
+                             (usStream.Data[offset + 2] << 8) | usStream.Data[offset + 3];
+                    headerSize = 4;
+                }
+                else
+                {
+                    offset++;
+                    continue;
+                }
+
+                // 检查是否使用
+                if (!usedUSOffsets.Contains(stringStart))
+                {
+                    // 清零字符串内容（保留长度前缀）
+                    uint fileOffset = usStream.Offset + stringStart + (uint)headerSize;
+                    ZeroBytes(fileOffset, (uint)length);
+                    _deepTrimmedUSBytes += length;
+                    trimmedCount++;
+                }
+
+                offset = stringStart + (uint)headerSize + (uint)length;
+            }
+
+            Console.WriteLine($"Trimmed {trimmedCount} user strings ({_deepTrimmedUSBytes} bytes)");
+            _deepTrimmedBytes += _deepTrimmedUSBytes;
+        }
+
+        /// <summary>
+        /// 从方法体中提取用户字符串引用
+        /// </summary>
+        private void ExtractUserStringReferences(uint rva, HashSet<uint> usedUSOffsets)
+        {
+            try
+            {
+                uint offset = RVAToFileOffset(rva);
+                if (offset == 0 || offset >= _fileData.Length)
+                    return;
+
+                byte firstByte = _fileData[offset];
+                byte[] ilCode;
+
+                // 检查方法体格式
+                if ((firstByte & 0x03) == 0x02) // Tiny format
+                {
+                    uint codeSize = (uint)(firstByte >> 2);
+                    ilCode = new byte[codeSize];
+                    Array.Copy(_fileData, offset + 1, ilCode, 0, codeSize);
+                }
+                else if ((firstByte & 0x03) == 0x03) // Fat format
+                {
+                    uint codeSize = BitConverter.ToUInt32(_fileData, (int)offset + 4);
+                    ilCode = new byte[codeSize];
+                    Array.Copy(_fileData, offset + 12, ilCode, 0, codeSize);
+                }
+                else
+                {
+                    return;
+                }
+
+                // 扫描 ldstr 指令 (0x72)
+                int pos = 0;
+                while (pos < ilCode.Length)
+                {
+                    if (ilCode[pos] == 0x72 && pos + 4 < ilCode.Length)
+                    {
+                        uint token = BitConverter.ToUInt32(ilCode, pos + 1);
+                        // ldstr 的 token 格式：0x70xxxxxx，其中 xxxxxx 是 #US 偏移
+                        if ((token & 0xFF000000) == 0x70000000)
+                        {
+                            uint usOffset = token & 0x00FFFFFF;
+                            usedUSOffsets.Add(usOffset);
+                        }
+                        pos += 5;
+                    }
+                    else
+                    {
+                        pos++;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Failed to extract user string references from RVA 0x{rva:X}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 输出 S2 剪裁统计信息
+        /// </summary>
+        private void PrintDeepStatistics()
+        {
+            Console.WriteLine("\n=== Deep Trimming Statistics ===");
+            
+            Console.WriteLine("\nMetadata Tables:");
+            foreach (var kvp in _deepTableStats.OrderBy(x => x.Key))
+            {
+                var (total, trimmed, bytes) = kvp.Value;
+                int remaining = total - trimmed;
+                double trimmedPercent = total > 0 ? (trimmed * 100.0 / total) : 0;
+                double bytesPercent = _fileData.Length > 0 ? (bytes * 100.0 / _fileData.Length) : 0;
+                
+                Console.WriteLine($"  {kvp.Key}:");
+                Console.WriteLine($"    Total rows: {total}, Trimmed: {trimmed} ({trimmedPercent:F2}%), Remaining: {remaining}");
+                Console.WriteLine($"    Trimmed bytes: {bytes:N0} ({bytesPercent:F4}%)");
+            }
+
+            Console.WriteLine($"\n#Blob Heap:");
+            if (_metadata.Streams.ContainsKey("#Blob"))
+            {
+                long blobSize = _metadata.Streams["#Blob"].Data.Length;
+                long blobRemaining = blobSize - _deepTrimmedBlobBytes;
+                Console.WriteLine($"  Total size: {blobSize:N0} bytes");
+                Console.WriteLine($"  Trimmed: {_deepTrimmedBlobBytes:N0} bytes ({(_deepTrimmedBlobBytes * 100.0 / blobSize):F2}%)");
+                Console.WriteLine($"  Remaining: {blobRemaining:N0} bytes ({(blobRemaining * 100.0 / blobSize):F2}%)");
+            }
+
+            Console.WriteLine($"\n#US Heap:");
+            if (_metadata.Streams.ContainsKey("#US"))
+            {
+                long usSize = _metadata.Streams["#US"].Data.Length;
+                long usRemaining = usSize - _deepTrimmedUSBytes;
+                Console.WriteLine($"  Total size: {usSize:N0} bytes");
+                Console.WriteLine($"  Trimmed: {_deepTrimmedUSBytes:N0} bytes ({(_deepTrimmedUSBytes * 100.0 / usSize):F2}%)");
+                Console.WriteLine($"  Remaining: {usRemaining:N0} bytes ({(usRemaining * 100.0 / usSize):F2}%)");
+            }
+
+            Console.WriteLine($"\nDeep Trimmed: {_deepTrimmedBytes:N0} bytes ({(_deepTrimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Total Trimmed: {(_totalBytesZeroed + _deepTrimmedBytes):N0} bytes ({((_totalBytesZeroed + _deepTrimmedBytes) * 100.0 / _fileData.Length):F2}%)");
+        }
+
+        // 辅助方法：解码 Coded Index
+        private uint DecodeHasConstant(uint codedIndex)
+        {
+            int tag = (int)(codedIndex & 0x03);
+            int index = (int)(codedIndex >> 2);
+            
+            switch (tag)
+            {
+                case 0: return (uint)(0x04000000 | index); // Field
+                case 1: return (uint)(0x08000000 | index); // Param
+                case 2: return (uint)(0x17000000 | index); // Property
+                default: return 0;
+            }
+        }
+
+        private uint DecodeHasCustomAttribute(uint codedIndex)
+        {
+            int tag = (int)(codedIndex & 0x1F);
+            int index = (int)(codedIndex >> 5);
+            
+            switch (tag)
+            {
+                case 0: return (uint)(0x06000000 | index); // MethodDef
+                case 1: return (uint)(0x04000000 | index); // Field
+                case 2: return (uint)(0x01000000 | index); // TypeRef
+                case 3: return (uint)(0x02000000 | index); // TypeDef
+                case 4: return (uint)(0x08000000 | index); // Param
+                case 6: return (uint)(0x0A000000 | index); // MemberRef
+                case 9: return (uint)(0x17000000 | index); // Property
+                case 10: return (uint)(0x14000000 | index); // Event
+                case 13: return (uint)(0x20000000 | index); // Assembly
+                default: return 0;
+            }
+        }
+
+        #endregion
     }
 }
