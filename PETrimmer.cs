@@ -20,6 +20,20 @@ namespace ECMA335Printer
         private readonly List<Section> _sections;
         private long _totalBytesZeroed; // Track total bytes zeroed during trimming
         private bool _isMethodLevelTrimming; // Flag to indicate if we're doing method-level trimming
+        private long _remainingBytes; // Track remaining bytes (code/data)
+        
+        // Method Bodies statistics
+        private int _trimmedMethodBodiesCount;
+        private int _remainingMethodBodiesCount;
+        private long _trimmedMethodBodiesBytes;
+        private long _remainingMethodBodiesBytes;
+        
+        // Trimmed method bytes (including method body + metadata)
+        private long _trimmedMethodBytes;
+        private long _remainingMethodBytes;
+        
+        // Phase 1 (class-level) trimmed method bytes
+        private long _phase1TrimmedMethodBytes;
 
         public PETrimmer(PEFile peFile, HashSet<string> invokedMethods)
         {
@@ -126,10 +140,10 @@ namespace ECMA335Printer
             int remainingMethodCount = 0;
             int totalMethodCount = _metadata.MethodDefTable?.Length ?? 0;
             _totalBytesZeroed = 0; // Reset byte counter
+            _remainingBytes = 0; // Reset remaining bytes counter
+            _trimmedMethodBytes = 0; // Reset trimmed method bytes counter
 
             long trimmedClassBytes = 0;
-            long trimmedMethodBytes = 0;
-            long remainingBytes = 0;
 
             // Two-phase trimming:
             // Phase 1: Trim entire classes that have no invoked methods (Class-Level)
@@ -162,7 +176,11 @@ namespace ECMA335Printer
                 }
             }
 
+            // Record Phase 1 trimmed method bytes
+            _phase1TrimmedMethodBytes = _trimmedMethodBytes;
+
             Console.WriteLine($"\n=== Phase 2: Method-Level Trimming (on remaining {remainingClassCount} types) ===");
+            _isMethodLevelTrimming = true; // Set flag for Phase 2
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -205,21 +223,19 @@ namespace ECMA335Printer
                     if (ShouldTrimMethod(methodFullName))
                     {
                         Console.WriteLine($"Trimming method: {methodFullName}");
-                        long beforeTrim = _totalBytesZeroed;
                         WalkMethod(methodIndex, ZeroBytes);
-                        trimmedMethodBytes += (_totalBytesZeroed - beforeTrim);
                         trimmedMethodCount++;
                     }
                     else
                     {
                         // Count remaining bytes using a closure
-                        WalkMethod(methodIndex, (offset, length) => remainingBytes += length);
+                        WalkMethod(methodIndex, (offset, length) => _remainingBytes += length);
                         remainingMethodCount++;
                     }
                 }
 
                 // For remaining types, count type-level data (TypeDef rows, Field data, etc.)
-                WalkTypeNonMethodData(typeIndex, typeDef, (offset, length) => remainingBytes += length);
+                WalkTypeNonMethodData(typeIndex, typeDef, (offset, length) => _remainingBytes += length);
             }
 
             long trimmedBytes = _totalBytesZeroed;
@@ -230,7 +246,7 @@ namespace ECMA335Printer
 
             // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
             long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = _totalBytesZeroed + remainingBytes + stringsRemainingBytes + baseOverhead;
+            long accountedBytes = _totalBytesZeroed + _remainingBytes + stringsRemainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
@@ -240,15 +256,26 @@ namespace ECMA335Printer
             Console.WriteLine($"\nTotal methods: {totalMethodCount}");
             Console.WriteLine($"Trimmed methods: {trimmedMethodCount}");
             Console.WriteLine($"Remaining methods: {remainingMethodCount}");
+            Console.WriteLine($"\nMethod Bodies Statistics:");
+            Console.WriteLine($"Trimmed method bodies: {_trimmedMethodBodiesCount}");
+            Console.WriteLine($"Remaining method bodies: {_remainingMethodBodiesCount}");
             Console.WriteLine($"\nByte Statistics:");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
             Console.WriteLine($"Trimmed bytes (classes): {trimmedClassBytes:N0} ({(trimmedClassBytes * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Trimmed bytes (methods): {trimmedMethodBytes:N0} ({(trimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Methods in class: {_phase1TrimmedMethodBytes:N0} ({(_phase1TrimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Class metadata: {(trimmedClassBytes - _phase1TrimmedMethodBytes):N0} ({((trimmedClassBytes - _phase1TrimmedMethodBytes) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Trimmed bytes (all methods): {_trimmedMethodBytes:N0} ({(_trimmedMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Method bodies: {_trimmedMethodBodiesBytes:N0} ({(_trimmedMethodBodiesBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Method metadata: {(_trimmedMethodBytes - _trimmedMethodBodiesBytes):N0} ({((_trimmedMethodBytes - _trimmedMethodBodiesBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes (code/data): {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (code/data): {_remainingBytes:N0} ({(_remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Methods: {_remainingMethodBytes:N0} ({(_remainingMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"    - Method bodies: {_remainingMethodBodiesBytes:N0} ({(_remainingMethodBodiesBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"    - Method metadata: {(_remainingMethodBytes - _remainingMethodBodiesBytes):N0} ({((_remainingMethodBytes - _remainingMethodBodiesBytes) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Other metadata: {(_remainingBytes - _remainingMethodBytes):N0} ({((_remainingBytes - _remainingMethodBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes (strings): {stringsRemainingBytes:N0} ({(stringsRemainingBytes * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes (total): {(remainingBytes + stringsRemainingBytes):N0} ({((remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (total): {(_remainingBytes + stringsRemainingBytes):N0} ({((_remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"\n#Strings Heap Statistics:");
             Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
@@ -264,11 +291,19 @@ namespace ECMA335Printer
             }
             if (trimmedMethodCount > 0)
             {
-                Console.WriteLine($"Average bytes per trimmed method: {trimmedMethodBytes / trimmedMethodCount:N0}");
+                Console.WriteLine($"Average bytes per trimmed method: {_trimmedMethodBytes / trimmedMethodCount:N0}");
+            }
+            if (_trimmedMethodBodiesCount > 0)
+            {
+                Console.WriteLine($"Average bytes per trimmed method body: {_trimmedMethodBodiesBytes / _trimmedMethodBodiesCount:N0}");
             }
             if (remainingMethodCount > 0)
             {
-                Console.WriteLine($"Average bytes per remaining method: {remainingBytes / remainingMethodCount:N0}");
+                Console.WriteLine($"Average bytes per remaining method: {_remainingBytes / remainingMethodCount:N0}");
+            }
+            if (_remainingMethodBodiesCount > 0)
+            {
+                Console.WriteLine($"Average bytes per remaining method body: {_remainingMethodBodiesBytes / _remainingMethodBodiesCount:N0}");
             }
         }
 
@@ -290,8 +325,7 @@ namespace ECMA335Printer
             int remainingClassCount = 0;
             int totalClassCount = _metadata.TypeDefTable.Length;
             _totalBytesZeroed = 0; // Reset byte counter
-
-            long remainingBytes = 0;
+            _remainingBytes = 0; // Reset remaining bytes counter
 
             // Single pass: Trim and count statistics
             Console.WriteLine("\n=== Performing Trimming ===");
@@ -316,7 +350,7 @@ namespace ECMA335Printer
                 else
                 {
                     // Count remaining bytes using a closure
-                    WalkType(typeIndex, typeDef, (offset, length) => remainingBytes += length);
+                    WalkType(typeIndex, typeDef, (offset, length) => _remainingBytes += length);
                     remainingClassCount++;
                 }
             }
@@ -329,21 +363,30 @@ namespace ECMA335Printer
 
             // Calculate base overhead (PE headers, shared metadata, heaps, other sections)
             long baseOverhead = CalculateBaseOverhead();
-            long accountedBytes = _totalBytesZeroed + remainingBytes + stringsRemainingBytes + baseOverhead;
+            long accountedBytes = _totalBytesZeroed + _remainingBytes + stringsRemainingBytes + baseOverhead;
             long unaccountedBytes = _fileData.Length - accountedBytes;
 
             Console.WriteLine($"\n=== Trimming Complete ===");
             Console.WriteLine($"Total types: {totalClassCount}");
             Console.WriteLine($"Trimmed types: {trimmedClassCount}");
             Console.WriteLine($"Remaining types: {remainingClassCount}");
+            Console.WriteLine($"\nMethod Bodies Statistics:");
+            Console.WriteLine($"Trimmed method bodies: {_trimmedMethodBodiesCount}");
+            Console.WriteLine($"Remaining method bodies: {_remainingMethodBodiesCount}");
             Console.WriteLine($"\nByte Statistics:");
             Console.WriteLine($"Total bytes: {_fileData.Length:N0}");
             Console.WriteLine($"Trimmed bytes (types): {trimmedBytes:N0} ({(trimmedBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Method bodies: {_trimmedMethodBodiesBytes:N0} ({(_trimmedMethodBodiesBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Other metadata: {(trimmedBytes - _trimmedMethodBodiesBytes):N0} ({((trimmedBytes - _trimmedMethodBodiesBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (strings): {trimmedStringBytes:N0} ({(trimmedStringBytes * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Trimmed bytes (total): {_totalBytesZeroed:N0} ({(_totalBytesZeroed * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes (code/data): {remainingBytes:N0} ({(remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (code/data): {_remainingBytes:N0} ({(_remainingBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Methods: {_remainingMethodBytes:N0} ({(_remainingMethodBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"    - Method bodies: {_remainingMethodBodiesBytes:N0} ({(_remainingMethodBodiesBytes * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"    - Method metadata: {(_remainingMethodBytes - _remainingMethodBodiesBytes):N0} ({((_remainingMethodBytes - _remainingMethodBodiesBytes) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"  - Other metadata: {(_remainingBytes - _remainingMethodBytes):N0} ({((_remainingBytes - _remainingMethodBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Remaining bytes (strings): {stringsRemainingBytes:N0} ({(stringsRemainingBytes * 100.0 / _fileData.Length):F2}%)");
-            Console.WriteLine($"Remaining bytes (total): {(remainingBytes + stringsRemainingBytes):N0} ({((remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
+            Console.WriteLine($"Remaining bytes (total): {(_remainingBytes + stringsRemainingBytes):N0} ({((_remainingBytes + stringsRemainingBytes) * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"Base overhead: {baseOverhead:N0} ({(baseOverhead * 100.0 / _fileData.Length):F2}%)");
             Console.WriteLine($"\n#Strings Heap Statistics:");
             Console.WriteLine($"  Original size: {stringsOriginalSize:N0} bytes");
@@ -357,9 +400,17 @@ namespace ECMA335Printer
             {
                 Console.WriteLine($"\nAverage bytes per trimmed type: {trimmedBytes / trimmedClassCount:N0}");
             }
+            if (_trimmedMethodBodiesCount > 0)
+            {
+                Console.WriteLine($"Average bytes per trimmed method body: {_trimmedMethodBodiesBytes / _trimmedMethodBodiesCount:N0}");
+            }
             if (remainingClassCount > 0)
             {
-                Console.WriteLine($"Average bytes per remaining type: {remainingBytes / remainingClassCount:N0}");
+                Console.WriteLine($"Average bytes per remaining type: {_remainingBytes / remainingClassCount:N0}");
+            }
+            if (_remainingMethodBodiesCount > 0)
+            {
+                Console.WriteLine($"Average bytes per remaining method body: {_remainingMethodBodiesBytes / _remainingMethodBodiesCount:N0}");
             }
         }
 
@@ -485,10 +536,36 @@ namespace ECMA335Printer
 
             var method = _metadata.MethodDefTable[methodIndex];
 
+            // Track the total bytes for this method (body + metadata)
+            long beforeZeroed = _totalBytesZeroed;
+            long beforeRemaining = _remainingBytes;
+
             // 1. Process method body (IL code)
             if (method.RVA != 0)
             {
+                // Track method body statistics separately
+                long beforeBodyZeroed = _totalBytesZeroed;
+                long beforeBodyRemaining = _remainingBytes;
+                
                 ProcessMethodBody(method.RVA, operation);
+                
+                long afterBodyZeroed = _totalBytesZeroed;
+                long afterBodyRemaining = _remainingBytes;
+                
+                // Calculate the difference for method body
+                long bodyZeroedDiff = afterBodyZeroed - beforeBodyZeroed;
+                long bodyRemainingDiff = afterBodyRemaining - beforeBodyRemaining;
+                
+                if (bodyZeroedDiff > 0)
+                {
+                    _trimmedMethodBodiesCount++;
+                    _trimmedMethodBodiesBytes += bodyZeroedDiff;
+                }
+                else if (bodyRemainingDiff > 0)
+                {
+                    _remainingMethodBodiesCount++;
+                    _remainingMethodBodiesBytes += bodyRemainingDiff;
+                }
             }
 
             // 2. Process method signature in Blob heap
@@ -502,6 +579,22 @@ namespace ECMA335Printer
 
             // 4. Process MethodDef row in metadata table
             ProcessMethodDefRow(methodIndex, operation);
+            
+            // Calculate the total bytes for this method (body + metadata)
+            long afterZeroed = _totalBytesZeroed;
+            long afterRemaining = _remainingBytes;
+            
+            long methodZeroedDiff = afterZeroed - beforeZeroed;
+            long methodRemainingDiff = afterRemaining - beforeRemaining;
+            
+            if (methodZeroedDiff > 0)
+            {
+                _trimmedMethodBytes += methodZeroedDiff;
+            }
+            else if (methodRemainingDiff > 0)
+            {
+                _remainingMethodBytes += methodRemainingDiff;
+            }
         }
 
         /// <summary>
