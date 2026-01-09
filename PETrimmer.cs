@@ -19,7 +19,6 @@ namespace ECMA335Printer
         private readonly MetadataRoot _metadata;
         private readonly List<Section> _sections;
         private long _totalBytesZeroed; // Track total bytes zeroed during trimming
-        private bool _isMethodLevelTrimming; // Flag to indicate if we're doing method-level trimming
         private long _remainingBytes; // Track remaining bytes (code/data)
         
         // Method Bodies statistics
@@ -124,7 +123,6 @@ namespace ECMA335Printer
         /// </summary>
         public void TrimAtMethodLevel()
         {
-            _isMethodLevelTrimming = true; // Set flag for method-level trimming
             Console.WriteLine("\n=== Starting Method-Level Trimming (includes Class-Level) ===");
 
             if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
@@ -180,7 +178,6 @@ namespace ECMA335Printer
             _phase1TrimmedMethodBytes = _trimmedMethodBytes;
 
             Console.WriteLine($"\n=== Phase 2: Method-Level Trimming (on remaining {remainingClassCount} types) ===");
-            _isMethodLevelTrimming = true; // Set flag for Phase 2
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -312,7 +309,6 @@ namespace ECMA335Printer
         /// </summary>
         public void TrimAtClassLevel()
         {
-            _isMethodLevelTrimming = false; // Set flag for class-level trimming
             Console.WriteLine("\n=== Starting Class-Level Trimming ===");
 
             if (_metadata.TypeDefTable == null || _metadata.TypeDefTable.Length == 0)
@@ -1297,7 +1293,7 @@ namespace ECMA335Printer
 
                         // In class-level trimming, keep all method names of preserved types
                         // In method-level trimming, only keep names of preserved methods
-                        if (!_isMethodLevelTrimming || !ShouldTrimMethod(methodFullName))
+                        if (!ShouldTrimMethod(methodFullName))
                         {
                             usedOffsets.Add(method.Name);
                         }
