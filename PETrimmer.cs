@@ -78,6 +78,51 @@ namespace ECMA335Printer
 
             Console.WriteLine($"Extracted {invokedTypeNames.Count} unique type names from invoked methods");
 
+            // Also extract types from method signatures (parameters and return types)
+            if (_metadata.MethodDefTable != null)
+            {
+                int signaturesAnalyzed = 0;
+                foreach (var methodFullName in _invokedMethods)
+                {
+                    // Find the method in MethodDefTable
+                    for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                    {
+                        var typeDef = _metadata.TypeDefTable[typeIndex];
+                        string typeName = GetTypeName(typeDef);
+
+                        uint methodStart = typeDef.MethodList;
+                        uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                            ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                            : (uint)_metadata.MethodDefTable.Length + 1;
+
+                        for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                        {
+                            if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                                continue;
+
+                            int methodIndex = (int)methodIdx - 1;
+                            var method = _metadata.MethodDefTable[methodIndex];
+                            string methodName = ReadString(method.Name);
+                            string fullName = $"{typeName}.{methodName}";
+                            string normalizedFullName = NormalizeMethodNameForComparison(fullName);
+
+                            if (normalizedFullName == methodFullName || fullName == methodFullName)
+                            {
+                                // Found the method, extract types from its signature
+                                if (method.ParsedSignature != null)
+                                {
+                                    ExtractTypesFromSignature(method.ParsedSignature, invokedTypeNames);
+                                    signaturesAnalyzed++;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Console.WriteLine($"After signature analysis: {invokedTypeNames.Count} unique type names");
+
             // Map type names to type indices
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
@@ -92,6 +137,118 @@ namespace ECMA335Printer
 
             Console.WriteLine($"Found {invokedTypes.Count} types with invoked methods");
             return invokedTypes;
+        }
+
+        /// <summary>
+        /// 从方法签名中提取类型名称
+        /// </summary>
+        private void ExtractTypesFromSignature(MethodSignature signature, HashSet<string> typeNames)
+        {
+            // Extract return type
+            ExtractTypeFromSignatureType(signature.ReturnType, typeNames);
+
+            // Extract parameter types
+            foreach (var param in signature.Parameters)
+            {
+                ExtractTypeFromSignatureType(param, typeNames);
+            }
+        }
+
+        /// <summary>
+        /// 从签名类型中提取类型名称
+        /// </summary>
+        private void ExtractTypeFromSignatureType(SignatureType sigType, HashSet<string> typeNames)
+        {
+            if (sigType == null)
+                return;
+
+            switch (sigType.ElementType)
+            {
+                case ElementType.VALUETYPE:
+                case ElementType.CLASS:
+                    // Token format: 0x02000000 (TypeDef) or 0x01000000 (TypeRef)
+                    string? typeName = ResolveTypeNameFromToken(sigType.Token);
+                    if (!string.IsNullOrEmpty(typeName))
+                    {
+                        typeNames.Add(typeName);
+                    }
+                    break;
+
+                case ElementType.PTR:
+                case ElementType.BYREF:
+                case ElementType.SZARRAY:
+                case ElementType.PINNED:
+                    // Recursively extract from inner type
+                    if (sigType.InnerType != null)
+                    {
+                        ExtractTypeFromSignatureType(sigType.InnerType, typeNames);
+                    }
+                    break;
+
+                case ElementType.GENERICINST:
+                    // Extract from generic type and its arguments
+                    if (sigType.InnerType != null)
+                    {
+                        ExtractTypeFromSignatureType(sigType.InnerType, typeNames);
+                    }
+                    if (sigType.GenericArgs != null)
+                    {
+                        foreach (var arg in sigType.GenericArgs)
+                        {
+                            ExtractTypeFromSignatureType(arg, typeNames);
+                        }
+                    }
+                    break;
+
+                case ElementType.ARRAY:
+                    // Extract from array element type
+                    if (sigType.InnerType != null)
+                    {
+                        ExtractTypeFromSignatureType(sigType.InnerType, typeNames);
+                    }
+                    break;
+
+                // Primitive types don't need to be preserved
+                default:
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 从token解析类型名称
+        /// </summary>
+        private string? ResolveTypeNameFromToken(uint token)
+        {
+            // The token in signature is a TypeDefOrRef coded index, need to decode it
+            // TypeDefOrRef encoding: 2 bits for tag, remaining bits for index
+            // Tag: 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec
+            int tag = (int)(token & 0x03);
+            int index = (int)(token >> 2) - 1; // Subtract 1 because table indices are 1-based
+
+            if (tag == 0) // TypeDef
+            {
+                if (_metadata.TypeDefTable != null && index >= 0 && index < _metadata.TypeDefTable.Length)
+                {
+                    return GetTypeName(_metadata.TypeDefTable[index]);
+                }
+            }
+            else if (tag == 1) // TypeRef
+            {
+                if (_metadata.TypeRefTable != null && index >= 0 && index < _metadata.TypeRefTable.Length)
+                {
+                    var typeRef = _metadata.TypeRefTable[index];
+                    string ns = ReadString(typeRef.TypeNamespace);
+                    string name = ReadString(typeRef.TypeName);
+                    return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+                }
+            }
+            else if (tag == 2) // TypeSpec
+            {
+                // TypeSpec references are more complex, would need to parse the blob
+                // For now, skip TypeSpec
+            }
+
+            return null;
         }
 
         /// <summary>
