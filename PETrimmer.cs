@@ -572,8 +572,48 @@ namespace ECMA335Printer
         /// </summary>
         public bool ShouldTrimType(int typeIndex)
         {
-            // Simply check if the type is in the invoked types set
-            return !_invokedTypes.Contains(typeIndex);
+            // Check if the type is in the invoked types set
+            if (_invokedTypes.Contains(typeIndex))
+                return false;
+
+            // Always preserve compiler-generated types
+            if (_metadata.TypeDefTable != null && typeIndex >= 0 && typeIndex < _metadata.TypeDefTable.Length)
+            {
+                var typeDef = _metadata.TypeDefTable[typeIndex];
+                string typeName = ReadString(typeDef.TypeName);
+                
+                // Preserve <PrivateImplementationDetails> and its nested types
+                // These are used by the compiler to store static array initialization data, literals, etc.
+                if (typeName.StartsWith("<PrivateImplementationDetails>") || 
+                    typeName.StartsWith("__StaticArrayInitTypeSize="))
+                {
+                    return false;
+                }
+                
+                // Check if this is a nested type of <PrivateImplementationDetails>
+                // by checking the EnclosingClass in NestedClass table
+                if (_metadata.NestedClassTable != null)
+                {
+                    foreach (var nested in _metadata.NestedClassTable)
+                    {
+                        if (nested.NestedClass == typeIndex + 1) // Table indices are 1-based
+                        {
+                            int enclosingIndex = (int)nested.EnclosingClass - 1;
+                            if (enclosingIndex >= 0 && enclosingIndex < _metadata.TypeDefTable.Length)
+                            {
+                                var enclosingType = _metadata.TypeDefTable[enclosingIndex];
+                                string enclosingName = ReadString(enclosingType.TypeName);
+                                if (enclosingName.StartsWith("<PrivateImplementationDetails>"))
+                                {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return true;
         }
 
         /// <summary>
