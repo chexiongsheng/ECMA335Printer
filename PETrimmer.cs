@@ -28,6 +28,9 @@ namespace ECMA335Printer
         // Blob reference tracking (to avoid trimming shared blob data)
         private HashSet<uint> _referencedBlobOffsets = new HashSet<uint>();
         
+        // Blob processing tracking (to avoid duplicate statistics)
+        private HashSet<uint> _processedBlobOffsets = new HashSet<uint>();
+        
         // Method Bodies statistics
         private int _trimmedMethodBodiesCount;
         private int _remainingMethodBodiesCount;
@@ -325,6 +328,7 @@ namespace ECMA335Printer
             // Phase 0: Collect all referenced blob offsets from kept methods
             Console.WriteLine("\n=== Phase 0: Collecting Referenced Blobs ===");
             _referencedBlobOffsets.Clear();
+            _processedBlobOffsets.Clear(); // Reset processed blob tracking
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -584,6 +588,7 @@ namespace ECMA335Printer
             // Phase 1: Collect all referenced blob offsets from kept methods
             Console.WriteLine("\n=== Phase 1: Collecting Referenced Blobs ===");
             _referencedBlobOffsets.Clear();
+            _processedBlobOffsets.Clear(); // Reset processed blob tracking
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -1253,6 +1258,16 @@ namespace ECMA335Printer
                 TraceLog($"Skipping blob (referenced by kept items)");
                 return;
             }
+
+            // Check if we've already processed this blob (avoid duplicate statistics)
+            if (_processedBlobOffsets.Contains(blobOffset))
+            {
+                TraceLog($"Skipping blob (already processed)");
+                return;
+            }
+            
+            // Mark this blob as processed
+            _processedBlobOffsets.Add(blobOffset);
 
             var blobStream = _metadata.Streams["#Blob"];
             uint fileOffset = blobStream.Offset + blobOffset;
