@@ -12,17 +12,19 @@ namespace ECMA335Printer
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file> [-d]] [-s1 <stats-file> [-d]]");
+                Console.WriteLine("Usage: ECMA335Printer <assembly-path> [-v] [-s0 <stats-file> [-d] [-trace]] [-s1 <stats-file> [-d] [-trace]]");
                 Console.WriteLine("  -v: Verbose mode, print detailed metadata information");
                 Console.WriteLine("  -s0 <stats-file>: Class-level trimming based on invoke statistics");
                 Console.WriteLine("  -s1 <stats-file>: Method-level trimming based on invoke statistics");
                 Console.WriteLine("  -d: Deep trimming - trim unused metadata after s0/s1 (must be used with -s0 or -s1)");
+                Console.WriteLine("  -trace: Enable trace mode to show detailed processing steps with indentation");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -v");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s1 invoke_stats.json");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json -d");
                 Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s1 invoke_stats.json -d");
+                Console.WriteLine("Example: ECMA335Printer MyAssembly.dll -s0 invoke_stats.json -trace");
                 return;
             }
 
@@ -31,6 +33,7 @@ namespace ECMA335Printer
             string? statsFile = null;
             int trimmingLevel = -1; // -1: no trimming, 0: class-level, 1: method-level
             bool enableDeepTrimming = false; // Deep trimming (metadata trimming after s0/s1)
+            bool enableTrace = false; // Trace mode for debugging
 
             // Parse arguments
             for (int i = 1; i < args.Length; i++)
@@ -54,6 +57,10 @@ namespace ECMA335Printer
                 else if (args[i] == "-d")
                 {
                     enableDeepTrimming = true;
+                }
+                else if (args[i] == "-trace")
+                {
+                    enableTrace = true;
                 }
             }
 
@@ -79,11 +86,11 @@ namespace ECMA335Printer
                     // Perform trimming based on level
                     if (trimmingLevel == 0)
                     {
-                        PerformClassLevelTrimming(assemblyPath, statsFile, enableDeepTrimming);
+                        PerformClassLevelTrimming(assemblyPath, statsFile, enableDeepTrimming, enableTrace);
                     }
                     else if (trimmingLevel == 1)
                     {
-                        PerformMethodLevelTrimming(assemblyPath, statsFile, enableDeepTrimming);
+                        PerformMethodLevelTrimming(assemblyPath, statsFile, enableDeepTrimming, enableTrace);
                     }
                 }
                 else
@@ -122,7 +129,7 @@ namespace ECMA335Printer
             }
         }
 
-        static void PerformClassLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false)
+        static void PerformClassLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false, bool enableTrace = false)
         {
             Console.WriteLine($"=== Class-Level Trimming ===");
             Console.WriteLine($"Assembly: {assemblyPath}");
@@ -130,6 +137,10 @@ namespace ECMA335Printer
             if (enableDeepTrimming)
             {
                 Console.WriteLine($"Deep trimming: Enabled");
+            }
+            if (enableTrace)
+            {
+                Console.WriteLine($"Trace mode: Enabled");
             }
 
             // Parse the PE file
@@ -148,7 +159,7 @@ namespace ECMA335Printer
             Console.WriteLine($"Found {invokedMethods.Count} invoked methods in stats");
 
             // Create trimmer and perform trimming
-            var trimmer = new PETrimmer(peFile, invokedMethods);
+            var trimmer = new PETrimmer(peFile, invokedMethods, enableTrace);
             trimmer.TrimAtClassLevel();
 
             // Perform deep trimming if enabled
@@ -165,7 +176,7 @@ namespace ECMA335Printer
             Console.WriteLine($"Output file: {outputPath}");
         }
 
-        static void PerformMethodLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false)
+        static void PerformMethodLevelTrimming(string assemblyPath, string statsFile, bool enableDeepTrimming = false, bool enableTrace = false)
         {
             Console.WriteLine($"=== Method-Level Trimming ===");
             Console.WriteLine($"Assembly: {assemblyPath}");
@@ -173,6 +184,10 @@ namespace ECMA335Printer
             if (enableDeepTrimming)
             {
                 Console.WriteLine($"Deep trimming: Enabled");
+            }
+            if (enableTrace)
+            {
+                Console.WriteLine($"Trace mode: Enabled");
             }
 
             // Parse the PE file
@@ -191,7 +206,7 @@ namespace ECMA335Printer
             Console.WriteLine($"Found {invokedMethods.Count} invoked methods in stats");
 
             // Create trimmer and perform trimming
-            var trimmer = new PETrimmer(peFile, invokedMethods);
+            var trimmer = new PETrimmer(peFile, invokedMethods, enableTrace);
             trimmer.TrimAtMethodLevel();
 
             // Perform deep trimming if enabled

@@ -21,6 +21,10 @@ namespace ECMA335Printer
         private long _totalBytesZeroed; // Track total bytes zeroed during trimming
         private long _remainingBytes; // Track remaining bytes (code/data)
         
+        // Trace mode support
+        private readonly bool _enableTrace;
+        private int _traceIndentLevel;
+        
         // Method Bodies statistics
         private int _trimmedMethodBodiesCount;
         private int _remainingMethodBodiesCount;
@@ -34,13 +38,15 @@ namespace ECMA335Printer
         // Phase 1 (class-level) trimmed method bytes
         private long _phase1TrimmedMethodBytes;
 
-        public PETrimmer(PEFile peFile, HashSet<string> invokedMethods)
+        public PETrimmer(PEFile peFile, HashSet<string> invokedMethods, bool enableTrace = false)
         {
             _peFile = peFile;
             _invokedMethods = invokedMethods;
             _fileData = (byte[])peFile.FileData!.Clone(); // Clone to avoid modifying original
             _metadata = peFile.Metadata!;
             _sections = peFile.Sections;
+            _enableTrace = enableTrace;
+            _traceIndentLevel = 0;
             
             // Build invoked types set for better performance
             _invokedTypes = BuildInvokedTypesSet();
@@ -507,10 +513,14 @@ namespace ECMA335Printer
                 // Get type name
                 string typeName = GetTypeName(typeDef);
                 
+                TraceLog($"Processing type: {typeName}");
+                TraceIndent();
+                
                 // Check if this type should be trimmed
                 if (ShouldTrimType(typeIndex))
                 {
                     Console.WriteLine($"Trimming type methods: {typeName}");
+                    TraceLog("Action: Trimming methods only");
                     // Only trim methods, keep TypeDef and fields for typeof/field access
                     WalkTypeMethods(typeIndex, typeDef, ZeroBytes);
                     // Count non-method data as remaining
@@ -519,10 +529,13 @@ namespace ECMA335Printer
                 }
                 else
                 {
+                    TraceLog("Action: Keeping type");
                     // Count remaining bytes using a closure
                     WalkType(typeIndex, typeDef, (offset, length) => _remainingBytes += length);
                     remainingClassCount++;
                 }
+                
+                TraceUnindent();
             }
 
             long trimmedBytes = _totalBytesZeroed;
@@ -727,13 +740,27 @@ namespace ECMA335Printer
                 methodEnd = (uint)(_metadata.MethodDefTable?.Length ?? 0) + 1;
             }
 
+            TraceLog($"Walking methods (range: {methodStart}-{methodEnd})");
+            TraceIndent();
+
             for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
             {
                 if (methodIdx == 0 || methodIdx > (_metadata.MethodDefTable?.Length ?? 0))
                     continue;
 
-                WalkMethod((int)methodIdx - 1, operation); // Convert to 0-based index
+                int methodIndex = (int)methodIdx - 1;
+                var method = _metadata.MethodDefTable[methodIndex];
+                string methodName = ReadString(method.Name);
+                
+                TraceLog($"Processing method: {methodName}");
+                TraceIndent();
+                
+                WalkMethod(methodIndex, operation); // Convert to 0-based index
+                
+                TraceUnindent();
             }
+            
+            TraceUnindent();
         }
 
         /// <summary>
@@ -753,6 +780,9 @@ namespace ECMA335Printer
             // 1. Process method body (IL code)
             if (method.RVA != 0)
             {
+                TraceLog($"Processing method body (RVA=0x{method.RVA:X})");
+                TraceIndent();
+                
                 // Track method body statistics separately
                 long beforeBodyZeroed = _totalBytesZeroed;
                 long beforeBodyRemaining = _remainingBytes;
@@ -776,19 +806,30 @@ namespace ECMA335Printer
                     _remainingMethodBodiesCount++;
                     _remainingMethodBodiesBytes += bodyRemainingDiff;
                 }
+                
+                TraceUnindent();
             }
 
             // 2. Process method signature in Blob heap
             if (method.Signature != 0)
             {
+                TraceLog($"Processing method signature (Blob offset=0x{method.Signature:X})");
+                TraceIndent();
                 ProcessBlobData(method.Signature, operation);
+                TraceUnindent();
             }
 
             // 3. Process parameters
+            TraceLog("Processing parameters");
+            TraceIndent();
             WalkMethodParameters(methodIndex, method, operation);
+            TraceUnindent();
 
             // 4. Process MethodDef row in metadata table
+            TraceLog("Processing MethodDef row");
+            TraceIndent();
             ProcessMethodDefRow(methodIndex, operation);
+            TraceUnindent();
             
             // Calculate the total bytes for this method (body + metadata)
             long afterZeroed = _totalBytesZeroed;
@@ -853,13 +894,27 @@ namespace ECMA335Printer
                 fieldEnd = (uint)(_metadata.FieldTable?.Length ?? 0) + 1;
             }
 
+            TraceLog($"Walking fields (range: {fieldStart}-{fieldEnd})");
+            TraceIndent();
+
             for (uint fieldIdx = fieldStart; fieldIdx < fieldEnd; fieldIdx++)
             {
                 if (fieldIdx == 0 || fieldIdx > (_metadata.FieldTable?.Length ?? 0))
                     continue;
 
-                WalkField((int)fieldIdx - 1, operation);
+                int fieldIndex = (int)fieldIdx - 1;
+                var field = _metadata.FieldTable[fieldIndex];
+                string fieldName = ReadString(field.Name);
+                
+                TraceLog($"Processing field: {fieldName}");
+                TraceIndent();
+                
+                WalkField(fieldIndex, operation);
+                
+                TraceUnindent();
             }
+            
+            TraceUnindent();
         }
 
         /// <summary>
@@ -875,7 +930,10 @@ namespace ECMA335Printer
             // 1. Process field signature in Blob heap
             if (field.Signature != 0)
             {
+                TraceLog($"Processing field signature (Blob offset=0x{field.Signature:X})");
+                TraceIndent();
                 ProcessBlobData(field.Signature, operation);
+                TraceUnindent();
             }
 
             // 2. Process FieldRVA if exists
@@ -885,13 +943,19 @@ namespace ECMA335Printer
                 {
                     if (fieldRVA.Field == fieldIndex + 1) // 1-based
                     {
+                        TraceLog($"Processing FieldRVA (RVA=0x{fieldRVA.RVA:X})");
+                        TraceIndent();
                         ProcessFieldRVAData(fieldRVA.RVA, operation);
+                        TraceUnindent();
                     }
                 }
             }
 
             // 3. Process Field row in metadata table
+            TraceLog("Processing Field row");
+            TraceIndent();
             ProcessFieldRow(fieldIndex, operation);
+            TraceUnindent();
         }
 
         /// <summary>
@@ -1157,6 +1221,8 @@ namespace ECMA335Printer
             if (offset + length > _fileData.Length)
                 length = (uint)(_fileData.Length - offset);
 
+            TraceZero(offset, length);
+
             for (uint i = 0; i < length; i++)
             {
                 _fileData[offset + i] = 0;
@@ -1173,6 +1239,52 @@ namespace ECMA335Printer
         #endregion
 
         #region Helper Methods
+
+        /// <summary>
+        /// 输出trace信息（带缩进）
+        /// </summary>
+        private void TraceLog(string message)
+        {
+            if (_enableTrace)
+            {
+                string indent = new string(' ', _traceIndentLevel * 2);
+                Console.WriteLine($"{indent}{message}");
+            }
+        }
+
+        /// <summary>
+        /// 增加trace缩进级别
+        /// </summary>
+        private void TraceIndent()
+        {
+            if (_enableTrace)
+            {
+                _traceIndentLevel++;
+            }
+        }
+
+        /// <summary>
+        /// 减少trace缩进级别
+        /// </summary>
+        private void TraceUnindent()
+        {
+            if (_enableTrace && _traceIndentLevel > 0)
+            {
+                _traceIndentLevel--;
+            }
+        }
+
+        /// <summary>
+        /// 输出清零操作的trace信息
+        /// </summary>
+        private void TraceZero(uint offset, uint length)
+        {
+            if (_enableTrace)
+            {
+                string indent = new string(' ', _traceIndentLevel * 2);
+                Console.WriteLine($"{indent}  [Zero] offset=0x{offset:X}, length={length}");
+            }
+        }
 
         /// <summary>
         /// 获取表行在文件中的偏移量
