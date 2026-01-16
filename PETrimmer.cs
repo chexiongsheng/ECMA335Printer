@@ -332,9 +332,10 @@ namespace ECMA335Printer
                 // Check if this type should be trimmed at class level
                 if (ShouldTrimType(typeIndex))
                 {
-                    Console.WriteLine($"Trimming entire type: {typeName}");
+                    Console.WriteLine($"Trimming type methods: {typeName}");
                     long beforeTrim = _totalBytesZeroed;
-                    WalkType(typeIndex, typeDef, ZeroBytes);
+                    // Only trim methods, keep TypeDef and fields for typeof/field access
+                    WalkTypeMethods(typeIndex, typeDef, ZeroBytes);
                     trimmedClassBytes += (_totalBytesZeroed - beforeTrim);
                     trimmedClassCount++;
                 }
@@ -509,8 +510,11 @@ namespace ECMA335Printer
                 // Check if this type should be trimmed
                 if (ShouldTrimType(typeIndex))
                 {
-                    Console.WriteLine($"Trimming type: {typeName}");
-                    WalkType(typeIndex, typeDef, ZeroBytes);
+                    Console.WriteLine($"Trimming type methods: {typeName}");
+                    // Only trim methods, keep TypeDef and fields for typeof/field access
+                    WalkTypeMethods(typeIndex, typeDef, ZeroBytes);
+                    // Count non-method data as remaining
+                    WalkTypeNonMethodData(typeIndex, typeDef, (offset, length) => _remainingBytes += length);
                     trimmedClassCount++;
                 }
                 else
