@@ -78,47 +78,60 @@ namespace ECMA335Printer
 
             Console.WriteLine($"Extracted {invokedTypeNames.Count} unique type names from invoked methods");
 
-            // Also extract types from method signatures (parameters and return types)
+            // Build a method index for fast lookup: methodFullName -> MethodDef
+            // This avoids the O(n*m*k) triple nested loop
             if (_metadata.MethodDefTable != null)
             {
-                int signaturesAnalyzed = 0;
-                foreach (var methodFullName in _invokedMethods)
+                Console.WriteLine("Building method index...");
+                var methodIndex = new Dictionary<string, MethodDefRow>(StringComparer.OrdinalIgnoreCase);
+                
+                for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
                 {
-                    // Find the method in MethodDefTable
-                    for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+                    var typeDef = _metadata.TypeDefTable[typeIndex];
+                    string typeName = GetTypeName(typeDef);
+
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
+                        ? _metadata.TypeDefTable[typeIndex + 1].MethodList
+                        : (uint)_metadata.MethodDefTable.Length + 1;
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
                     {
-                        var typeDef = _metadata.TypeDefTable[typeIndex];
-                        string typeName = GetTypeName(typeDef);
+                        if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
+                            continue;
 
-                        uint methodStart = typeDef.MethodList;
-                        uint methodEnd = typeIndex < _metadata.TypeDefTable.Length - 1
-                            ? _metadata.TypeDefTable[typeIndex + 1].MethodList
-                            : (uint)_metadata.MethodDefTable.Length + 1;
-
-                        for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                        int methodDefIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodDefIndex];
+                        string methodName = ReadString(method.Name);
+                        string fullName = $"{typeName}.{methodName}";
+                        string normalizedFullName = NormalizeMethodNameForComparison(fullName);
+                        
+                        // Store both normalized and original names
+                        methodIndex[normalizedFullName] = method;
+                        if (normalizedFullName != fullName)
                         {
-                            if (methodIdx == 0 || methodIdx > _metadata.MethodDefTable.Length)
-                                continue;
-
-                            int methodIndex = (int)methodIdx - 1;
-                            var method = _metadata.MethodDefTable[methodIndex];
-                            string methodName = ReadString(method.Name);
-                            string fullName = $"{typeName}.{methodName}";
-                            string normalizedFullName = NormalizeMethodNameForComparison(fullName);
-
-                            if (normalizedFullName == methodFullName || fullName == methodFullName)
-                            {
-                                // Found the method, extract types from its signature
-                                if (method.ParsedSignature != null)
-                                {
-                                    ExtractTypesFromSignature(method.ParsedSignature, invokedTypeNames);
-                                    signaturesAnalyzed++;
-                                }
-                                break;
-                            }
+                            methodIndex[fullName] = method;
                         }
                     }
                 }
+                
+                Console.WriteLine($"Built index for {methodIndex.Count} methods");
+
+                // Now extract types from method signatures using the index
+                int signaturesAnalyzed = 0;
+                foreach (var methodFullName in _invokedMethods)
+                {
+                    if (methodIndex.TryGetValue(methodFullName, out var method))
+                    {
+                        if (method.ParsedSignature != null)
+                        {
+                            ExtractTypesFromSignature(method.ParsedSignature, invokedTypeNames);
+                            signaturesAnalyzed++;
+                        }
+                    }
+                }
+                
+                Console.WriteLine($"Analyzed {signaturesAnalyzed} method signatures");
             }
 
             Console.WriteLine($"After signature analysis: {invokedTypeNames.Count} unique type names");
