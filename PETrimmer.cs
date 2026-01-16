@@ -25,6 +25,9 @@ namespace ECMA335Printer
         private readonly bool _enableTrace;
         private int _traceIndentLevel;
         
+        // Blob reference tracking (to avoid trimming shared blob data)
+        private HashSet<uint> _referencedBlobOffsets = new HashSet<uint>();
+        
         // Method Bodies statistics
         private int _trimmedMethodBodiesCount;
         private int _remainingMethodBodiesCount;
@@ -319,6 +322,84 @@ namespace ECMA335Printer
 
             long trimmedClassBytes = 0;
 
+            // Phase 0: Collect all referenced blob offsets from kept methods
+            Console.WriteLine("\n=== Phase 0: Collecting Referenced Blobs ===");
+            _referencedBlobOffsets.Clear();
+            for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+            {
+                var typeDef = _metadata.TypeDefTable[typeIndex];
+                
+                // Skip <Module> type
+                if (typeIndex == 0)
+                    continue;
+
+                // If type is kept, collect blob references from all methods
+                if (!ShouldTrimType(typeIndex))
+                {
+                    // Process each method in this type
+                    uint methodStart = typeDef.MethodList;
+                    uint methodEnd;
+
+                    if (typeIndex < _metadata.TypeDefTable.Length - 1)
+                    {
+                        methodEnd = _metadata.TypeDefTable[typeIndex + 1].MethodList;
+                    }
+                    else
+                    {
+                        methodEnd = (uint)(_metadata.MethodDefTable?.Length ?? 0) + 1;
+                    }
+
+                    for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+                    {
+                        if (methodIdx == 0 || methodIdx > (_metadata.MethodDefTable?.Length ?? 0))
+                            continue;
+
+                        int methodIndex = (int)methodIdx - 1;
+                        var method = _metadata.MethodDefTable[methodIndex];
+                        string methodName = ReadString(method.Name);
+                        string typeName = GetTypeName(typeDef);
+                        string methodFullName = $"{typeName}.{methodName}";
+
+                        // If method is kept, collect its blob references
+                        if (!ShouldTrimMethod(methodFullName))
+                        {
+                            if (method.Signature != 0)
+                            {
+                                _referencedBlobOffsets.Add(method.Signature);
+                            }
+                        }
+                    }
+                    
+                    // Also collect field blob references
+                    uint fieldStart = typeDef.FieldList;
+                    uint fieldEnd;
+
+                    if (typeIndex < _metadata.TypeDefTable.Length - 1)
+                    {
+                        fieldEnd = _metadata.TypeDefTable[typeIndex + 1].FieldList;
+                    }
+                    else
+                    {
+                        fieldEnd = (uint)(_metadata.FieldTable?.Length ?? 0) + 1;
+                    }
+
+                    for (uint fieldIdx = fieldStart; fieldIdx < fieldEnd; fieldIdx++)
+                    {
+                        if (fieldIdx == 0 || fieldIdx > (_metadata.FieldTable?.Length ?? 0))
+                            continue;
+
+                        int fieldIndex = (int)fieldIdx - 1;
+                        var field = _metadata.FieldTable[fieldIndex];
+                        
+                        if (field.Signature != 0)
+                        {
+                            _referencedBlobOffsets.Add(field.Signature);
+                        }
+                    }
+                }
+            }
+            Console.WriteLine($"Collected {_referencedBlobOffsets.Count} referenced blob offsets");
+
             // Two-phase trimming:
             // Phase 1: Trim entire classes that have no invoked methods (Class-Level)
             // Phase 2: For remaining classes, trim individual methods (Method-Level)
@@ -500,8 +581,27 @@ namespace ECMA335Printer
             _totalBytesZeroed = 0; // Reset byte counter
             _remainingBytes = 0; // Reset remaining bytes counter
 
-            // Single pass: Trim and count statistics
-            Console.WriteLine("\n=== Performing Trimming ===");
+            // Phase 1: Collect all referenced blob offsets from kept methods
+            Console.WriteLine("\n=== Phase 1: Collecting Referenced Blobs ===");
+            _referencedBlobOffsets.Clear();
+            for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
+            {
+                var typeDef = _metadata.TypeDefTable[typeIndex];
+                
+                // Skip <Module> type
+                if (typeIndex == 0)
+                    continue;
+
+                // If type is kept, collect all blob references from its methods and fields
+                if (!ShouldTrimType(typeIndex))
+                {
+                    CollectTypeBlobReferences(typeIndex, typeDef);
+                }
+            }
+            Console.WriteLine($"Collected {_referencedBlobOffsets.Count} referenced blob offsets");
+
+            // Phase 2: Perform trimming
+            Console.WriteLine("\n=== Phase 2: Performing Trimming ===");
             for (int typeIndex = 0; typeIndex < _metadata.TypeDefTable.Length; typeIndex++)
             {
                 var typeDef = _metadata.TypeDefTable[typeIndex];
@@ -700,6 +800,88 @@ namespace ECMA335Printer
 
             // 4. Process TypeDef row data (but keep the row structure)
             ProcessTypeDefRow(typeIndex, operation);
+        }
+
+        /// <summary>
+        /// 收集类型中所有被引用的Blob偏移量（用于避免剪裁共享的Blob数据）
+        /// </summary>
+        private void CollectTypeBlobReferences(int typeIndex, TypeDefRow typeDef)
+        {
+            // Collect blob references from methods
+            uint methodStart = typeDef.MethodList;
+            uint methodEnd;
+
+            if (typeIndex < _metadata.TypeDefTable!.Length - 1)
+            {
+                methodEnd = _metadata.TypeDefTable[typeIndex + 1].MethodList;
+            }
+            else
+            {
+                methodEnd = (uint)(_metadata.MethodDefTable?.Length ?? 0) + 1;
+            }
+
+            for (uint methodIdx = methodStart; methodIdx < methodEnd; methodIdx++)
+            {
+                if (methodIdx == 0 || methodIdx > (_metadata.MethodDefTable?.Length ?? 0))
+                    continue;
+
+                int methodIndex = (int)methodIdx - 1;
+                var method = _metadata.MethodDefTable[methodIndex];
+                
+                // Collect method signature blob reference
+                if (method.Signature != 0)
+                {
+                    _referencedBlobOffsets.Add(method.Signature);
+                }
+                
+                // Collect parameter blob references
+                uint paramStart = method.ParamList;
+                uint paramEnd;
+                if (methodIndex < _metadata.MethodDefTable.Length - 1)
+                {
+                    paramEnd = _metadata.MethodDefTable[methodIndex + 1].ParamList;
+                }
+                else
+                {
+                    paramEnd = (uint)(_metadata.ParamTable?.Length ?? 0) + 1;
+                }
+
+                for (uint paramIdx = paramStart; paramIdx < paramEnd; paramIdx++)
+                {
+                    if (paramIdx == 0 || paramIdx > (_metadata.ParamTable?.Length ?? 0))
+                        continue;
+
+                    // Parameters don't have blob signatures in ParamTable, skip
+                }
+            }
+
+            // Collect blob references from fields
+            uint fieldStart = typeDef.FieldList;
+            uint fieldEnd;
+
+            if (typeIndex < _metadata.TypeDefTable!.Length - 1)
+            {
+                fieldEnd = _metadata.TypeDefTable[typeIndex + 1].FieldList;
+            }
+            else
+            {
+                fieldEnd = (uint)(_metadata.FieldTable?.Length ?? 0) + 1;
+            }
+
+            for (uint fieldIdx = fieldStart; fieldIdx < fieldEnd; fieldIdx++)
+            {
+                if (fieldIdx == 0 || fieldIdx > (_metadata.FieldTable?.Length ?? 0))
+                    continue;
+
+                int fieldIndex = (int)fieldIdx - 1;
+                var field = _metadata.FieldTable[fieldIndex];
+                
+                // Collect field signature blob reference
+                if (field.Signature != 0)
+                {
+                    _referencedBlobOffsets.Add(field.Signature);
+                }
+            }
         }
 
         /// <summary>
@@ -1064,6 +1246,13 @@ namespace ECMA335Printer
         {
             if (!_metadata.Streams.ContainsKey("#Blob"))
                 return;
+
+            // Check if this blob is referenced by any kept method/field
+            if (_referencedBlobOffsets.Contains(blobOffset))
+            {
+                TraceLog($"Skipping blob (referenced by kept items)");
+                return;
+            }
 
             var blobStream = _metadata.Streams["#Blob"];
             uint fileOffset = blobStream.Offset + blobOffset;
